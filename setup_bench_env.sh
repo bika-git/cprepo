@@ -25,7 +25,7 @@ CURRENT_DIRECTORY="$PWD"
 # ── configurable ──────────────────────────────────────────────────────────────
 NJOBS=50
 LIBTORCH_PREFIX=/home/AD.NORCERESEARCH.NO/bika/bika/workstation/opmstation/soft/libtorch
-DUNE_VERSION=v2.9.1
+DUNE_VERSION=v2.11.0
 
 DUNE_PREFIX_PATH="\
 $CURRENT_DIRECTORY/dune-common/build-cmake;\
