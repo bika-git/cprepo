@@ -51,11 +51,9 @@ SWEEP_RUN2=$SWEEP_DIR/sweep_run2
 SWEEP_SPE11=$SWEEP_DIR/sweep_spe11_fresh
 
 
-# Sweep CSVs used as training input
-#   sweep2/3 = 2 runs of SPE9+Norne
-#   sweep_spe11 = SPE11A+SPE11B sweep data
-#   sweep5   = 3rd run of SPE9+Norne + well_density + nl_residual_trend (14 feat)
-#   sweep7   = 4th run of SPE9+Norne with all 19 features (new binary)
+# Sweep CSVs used as training input (all 12-feature format)
+#   sweep2/3    = 2 runs of SPE9+Norne
+#   sweep_spe11 = SPE11A sweep data
 SWEEP_CSVS=(
     $SCRIPT_DIR/cpr_sweep_data/sweep2/*.csv
     $SCRIPT_DIR/cpr_sweep_data/sweep3/*.csv
