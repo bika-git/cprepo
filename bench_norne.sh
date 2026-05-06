@@ -22,8 +22,9 @@
 #     flow_default / baseline / neural-v3 / neural-reuse for Norne, SPE9, SPE11A.
 #
 # Usage:
-#   ./bench_norne.sh                    # serial
-#   NPROCS=8 OMPI_MCA_btl=self,sm ./bench_norne.sh   # MPI
+#   ./bench_norne.sh                              # serial, fresh sweep
+#   NPROCS=8 OMPI_MCA_btl=self,sm ./bench_norne.sh   # MPI, fresh sweep
+#   FRESH_SWEEP=0 ./bench_norne.sh                # skip sweep, reuse existing cpr_sweep_data/
 
 set -euo pipefail
 
@@ -31,6 +32,9 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 FLOW=$SCRIPT_DIR/build/opm-simulators/bin/flow
 SCRIPTS=$SCRIPT_DIR/opm-simulators/doc/neural_cpr
+
+# Set FRESH_SWEEP=0 to skip Step 0 and reuse existing data in cpr_sweep_data/
+FRESH_SWEEP=${FRESH_SWEEP:-1}
 
 # MPI setup — NPROCS controls ranks per flow call in both sweep and benchmark
 NPROCS=${NPROCS:-1}
@@ -197,13 +201,6 @@ policy_summary() {
 
 # ── Step 0 — regenerate sweeps ───────────────────────────────────────────────
 
-echo "========================================"
-echo "  Step 0 — regenerate sweep data"
-echo "  Norne + SPE9 : 2 independent runs  (→ sweep_run1, sweep_run2)"
-echo "  SPE11A       : 1 run               (→ sweep_spe11_fresh)"
-echo "  MPI ranks/job: $NPROCS"
-echo "========================================"
-
 run_sweep() {
     local tag=$1 out=$2; shift 2
     echo "  ── $tag ──"
@@ -214,14 +211,37 @@ run_sweep() {
         "$@"
 }
 
-run_sweep "Norne + SPE9 (run 1)" "$SWEEP_RUN1" \
-    --decks "$NORNE_DECK" "$SPE9_DECK"
+if [[ $FRESH_SWEEP -eq 1 ]]; then
+    echo "========================================"
+    echo "  Step 0 — regenerate sweep data"
+    echo "  Norne + SPE9 : 2 independent runs  (→ sweep_run1, sweep_run2)"
+    echo "  SPE11A       : 1 run               (→ sweep_spe11_fresh)"
+    echo "  MPI ranks/job: $NPROCS"
+    echo "========================================"
 
-run_sweep "Norne + SPE9 (run 2)" "$SWEEP_RUN2" \
-    --decks "$NORNE_DECK" "$SPE9_DECK"
+    run_sweep "Norne + SPE9 (run 1)" "$SWEEP_RUN1" \
+        --decks "$NORNE_DECK" "$SPE9_DECK"
 
-run_sweep "SPE11A" "$SWEEP_SPE11" \
-    --decks "$SPE11PYOPM_DECK"
+    run_sweep "Norne + SPE9 (run 2)" "$SWEEP_RUN2" \
+        --decks "$NORNE_DECK" "$SPE9_DECK"
+
+    run_sweep "SPE11A" "$SWEEP_SPE11" \
+        --decks "$SPE11PYOPM_DECK"
+else
+    echo "========================================"
+    echo "  Step 0 — SKIPPED (FRESH_SWEEP=0, reusing existing data)"
+    echo "  Expected: $SWEEP_RUN1"
+    echo "            $SWEEP_RUN2"
+    echo "            $SWEEP_SPE11"
+    echo "========================================"
+    for dir in "$SWEEP_RUN1" "$SWEEP_RUN2" "$SWEEP_SPE11"; do
+        if [[ ! -d "$dir" ]]; then
+            echo "ERROR: missing sweep directory: $dir" >&2
+            echo "       Run without FRESH_SWEEP=0 first to generate it." >&2
+            exit 1
+        fi
+    done
+fi
 
 # ── Step 1 — label sweep data ────────────────────────────────────────────────
 
