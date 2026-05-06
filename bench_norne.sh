@@ -25,6 +25,7 @@
 #   ./bench_norne.sh                              # serial, fresh sweep
 #   NPROCS=8 OMPI_MCA_btl=self,sm ./bench_norne.sh   # MPI, fresh sweep
 #   FRESH_SWEEP=0 ./bench_norne.sh                # skip sweep, reuse existing cpr_sweep_data/
+#   TUNE_SPE11_REUSE=1 ./bench_norne.sh           # grid-search reuse-setup × reuse-interval for SPE11
 
 set -euo pipefail
 
@@ -42,6 +43,8 @@ SCRIPTS=$SCRIPT_DIR/opm-simulators/doc/neural_cpr
 
 # Set FRESH_SWEEP=0 to skip Step 0 and reuse existing data in cpr_sweep_data/
 FRESH_SWEEP=${FRESH_SWEEP:-1}
+# Set TUNE_SPE11_REUSE=1 to grid-search cpr-reuse-setup x cpr-reuse-interval for SPE11 neural-reuse
+TUNE_SPE11_REUSE=${TUNE_SPE11_REUSE:-0}
 
 # MPI setup — NPROCS controls ranks per flow call in both sweep and benchmark
 NPROCS=${NPROCS:-1}
@@ -378,7 +381,11 @@ echo "    Norne/SPE9 neural       : $(label_desc ml)"
 echo "    SPE11 flow_default      : $(label_desc none)"
 echo "    SPE11 baseline          : $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); cpr-reuse-setup=0"
 echo "    SPE11 neural            : base $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels 16-23 forbidden"
-echo "    SPE11 neural-reuse      : same neural guard; cpr-reuse-setup=4, cpr-reuse-interval=10"
+if [[ $TUNE_SPE11_REUSE -eq 1 ]]; then
+    echo "    SPE11 neural-reuse      : grid search setup={2,4,8} × interval={5,10,20} → best kept"
+else
+    echo "    SPE11 neural-reuse      : same neural guard; cpr-reuse-setup=4, cpr-reuse-interval=10"
+fi
 echo "========================================"
 
 echo ""
@@ -416,12 +423,39 @@ run_deck "neural-v3"    "$SPE11PYOPM_DECK" "$SPE11PYOPM_NEURAL_OUT" \
     --linear-solver="$SPE11PYOPM_SOLVER" \
     --cpr-reuse-setup=0
 
-SPE11PYOPM_NEURAL_REUSE_OUT="$OUTDIR/spe11pyopm_neural_reuse"
-echo "  neural-reuse: same guard, with cpr-reuse-setup=4 and cpr-reuse-interval=10"
-run_deck "neural-reuse" "$SPE11PYOPM_DECK" "$SPE11PYOPM_NEURAL_REUSE_OUT" \
-    --linear-solver="$SPE11PYOPM_SOLVER" \
-    --cpr-reuse-setup=4 \
-    --cpr-reuse-interval=10
+best_reuse_setup=4
+best_reuse_interval=10
+
+if [[ $TUNE_SPE11_REUSE -eq 1 ]]; then
+    echo "  neural-reuse tuning: grid search reuse-setup={2,4,8} × reuse-interval={5,10,20}"
+    best_reuse_wall=""
+    for rs in 2 4 8; do
+        for ri in 5 10 20; do
+            out="$OUTDIR/spe11pyopm_neural_reuse_s${rs}_i${ri}"
+            run_deck "nr_s${rs}_i${ri}" "$SPE11PYOPM_DECK" "$out" \
+                --linear-solver="$SPE11PYOPM_SOLVER" \
+                --cpr-reuse-setup="$rs" \
+                --cpr-reuse-interval="$ri"
+            read -r _tn _tl tw < <(extract "$out/flow.log") || true
+            if [[ "$tw" != "-" && "$tw" != "FAIL" ]]; then
+                if [[ -z "$best_reuse_wall" ]] || awk "BEGIN { exit !($tw < $best_reuse_wall) }"; then
+                    best_reuse_wall=$tw
+                    best_reuse_setup=$rs
+                    best_reuse_interval=$ri
+                fi
+            fi
+        done
+    done
+    SPE11PYOPM_NEURAL_REUSE_OUT="$OUTDIR/spe11pyopm_neural_reuse_s${best_reuse_setup}_i${best_reuse_interval}"
+    echo "  Best: reuse-setup=$best_reuse_setup reuse-interval=$best_reuse_interval (wall=${best_reuse_wall:-FAIL}s)"
+else
+    SPE11PYOPM_NEURAL_REUSE_OUT="$OUTDIR/spe11pyopm_neural_reuse"
+    echo "  neural-reuse: same guard, with cpr-reuse-setup=${best_reuse_setup} and cpr-reuse-interval=${best_reuse_interval}"
+    run_deck "neural-reuse" "$SPE11PYOPM_DECK" "$SPE11PYOPM_NEURAL_REUSE_OUT" \
+        --linear-solver="$SPE11PYOPM_SOLVER" \
+        --cpr-reuse-setup="$best_reuse_setup" \
+        --cpr-reuse-interval="$best_reuse_interval"
+fi
 unset OPM_NEURAL_CPR_WEIGHTS
 unset OPM_NEURAL_CPR_FORBID_LABELS
 
@@ -448,6 +482,25 @@ print_table "SPE9" \
 echo "  Policy check:"; policy_check "$OUTDIR/spe9_neural/SPE9.DBG"
 policy_summary "$OUTDIR/spe9_neural/SPE9.DBG"
 
+if [[ $TUNE_SPE11_REUSE -eq 1 ]]; then
+    echo ""
+    echo "  SPE11A reuse tuning grid (neural guard, labels 16-23 forbidden):"
+    printf "  %-8s  %-10s  %8s  %8s  %8s  %10s\n" "setup" "interval" "Newton" "Linear" "Wall(s)" "Δ wall"
+    printf "  %s\n" "──────────────────────────────────────────────────────────────"
+    ref_tune_w=""
+    for rs in 2 4 8; do
+        for ri in 5 10 20; do
+            out="$OUTDIR/spe11pyopm_neural_reuse_s${rs}_i${ri}"
+            read -r tn tl tw < <(extract "$out/flow.log") || true
+            [[ -z "$ref_tune_w" && "$tw" != "-" && "$tw" != "FAIL" ]] && ref_tune_w=$tw
+            marker=""; [[ $rs -eq $best_reuse_setup && $ri -eq $best_reuse_interval ]] && marker=" ← best"
+            printf "  %-8s  %-10s  %8s  %8s  %8s  %10s%s\n" \
+                "$rs" "$ri" "${tn:--}" "${tl:--}" "${tw:--}" "$(pct_delta "$ref_tune_w" "$tw")" "$marker"
+        done
+    done
+    echo ""
+fi
+
 read -r spd_n spd_l spd_w < <(extract "$OUTDIR/spe11pyopm_flow_default/flow.log") || true
 read -r spb_n spb_l spb_w < <(extract "$OUTDIR/spe11pyopm_baseline/flow.log")     || true
 read -r spn_n spn_l spn_w < <(extract "$SPE11PYOPM_NEURAL_OUT/flow.log")           || true
@@ -461,7 +514,7 @@ echo "  Labels:"
 echo "    flow_default : $(label_desc none)"
 echo "    baseline     : $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); cpr-reuse-setup=0"
 echo "    neural       : base $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels 16-23 forbidden"
-echo "    neural-reuse : base $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels 16-23 forbidden; reuse-setup=4; reuse-interval=10"
+echo "    neural-reuse : base $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels 16-23 forbidden; reuse-setup=${best_reuse_setup}; reuse-interval=${best_reuse_interval}"
 echo "  Policy check:"; policy_check "$SPE11PYOPM_NEURAL_OUT/SPE11A.DBG"
 policy_summary "$SPE11PYOPM_NEURAL_OUT/SPE11A.DBG"
 echo "  Reuse policy check:"; policy_check "$SPE11PYOPM_NEURAL_REUSE_OUT/SPE11A.DBG"
