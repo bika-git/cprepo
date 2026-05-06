@@ -8,8 +8,8 @@
 #   bash setup_bench_env.sh
 #
 # What this does:
-#   1. Clones Dune modules (v2.11.0) and OPM repos (custom neural-cpr branches)
-#   2. Builds Dune → opm-common → opm-grid → opm-simulators (flow binary)
+#   1. Clones Dune modules (v2.9.1) and OPM repos (custom neural-cpr branches)
+#   2. Builds Dune via dunecontrol → opm-common → opm-grid → opm-simulators (flow)
 #   3. Clones opm-tests (test decks for Norne, SPE9, SPE11A)
 #   4. Generates the 24 CPR solver config JSONs required by bench_norne.sh
 #
@@ -22,9 +22,22 @@ set -euo pipefail
 
 CURRENT_DIRECTORY="$PWD"
 
-TRILINOS_ROOT="$CURRENT_DIRECTORY/Trilinos"
-ZOLTAN_LIB="$TRILINOS_ROOT/build/packages/zoltan/src/libzoltan.dylib"
-ZOLTAN_INC="$TRILINOS_ROOT/packages/zoltan/src/include;$TRILINOS_ROOT/build/packages/zoltan/src"
+# ── configurable ──────────────────────────────────────────────────────────────
+NJOBS=50
+LIBTORCH_PREFIX=/home/AD.NORCERESEARCH.NO/bika/bika/workstation/opmstation/soft/libtorch
+DUNE_VERSION=v2.9.1
+
+DUNE_PREFIX_PATH="\
+$CURRENT_DIRECTORY/dune-common/build-cmake;\
+$CURRENT_DIRECTORY/dune-geometry/build-cmake;\
+$CURRENT_DIRECTORY/dune-grid/build-cmake;\
+$CURRENT_DIRECTORY/dune-istl/build-cmake"
+
+OPM_PREFIX_PATH="\
+$DUNE_PREFIX_PATH;\
+$LIBTORCH_PREFIX;\
+$CURRENT_DIRECTORY/build/opm-common;\
+$CURRENT_DIRECTORY/build/opm-grid"
 
 # ── 1. Clone repos ────────────────────────────────────────────────────────────
 
@@ -34,7 +47,8 @@ echo "========================================"
 
 for module in common geometry grid istl; do
     if [[ ! -d "$CURRENT_DIRECTORY/dune-$module" ]]; then
-        git clone https://gitlab.dune-project.org/core/dune-$module.git \
+        git clone --branch "$DUNE_VERSION" \
+            https://gitlab.dune-project.org/core/dune-$module.git \
             "$CURRENT_DIRECTORY/dune-$module"
     else
         echo "  dune-$module already present, skipping clone"
@@ -71,23 +85,16 @@ else
     git -C "$CURRENT_DIRECTORY/opm-tests" checkout tests-neural-cpr-v3
 fi
 
-# ── 2. Build Dune modules ─────────────────────────────────────────────────────
+# ── 2. Build Dune modules via dunecontrol ─────────────────────────────────────
 
 echo ""
 echo "========================================"
-echo "  Step 2 — build Dune modules"
+echo "  Step 2 — build Dune modules ($DUNE_VERSION)"
 echo "========================================"
 
 for module in common geometry grid istl; do
-    cd "$CURRENT_DIRECTORY/dune-$module"
-    git checkout v2.11.0
-    mkdir -p build && cd build
-    cmake -DDUNE_ENABLE_PYTHONBINDINGS=0 \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_INSTALL_PREFIX="$CURRENT_DIRECTORY/build/ThirdParty" \
-          "$CURRENT_DIRECTORY/dune-$module"
-    make -j8
-    cd "$CURRENT_DIRECTORY"
+    "$CURRENT_DIRECTORY/dune-common/bin/dunecontrol" --only=dune-$module cmake
+    "$CURRENT_DIRECTORY/dune-common/bin/dunecontrol" --only=dune-$module make -j"$NJOBS"
 done
 
 # ── 3. Build OPM stack ────────────────────────────────────────────────────────
@@ -97,25 +104,28 @@ echo "========================================"
 echo "  Step 3 — build OPM stack"
 echo "========================================"
 
-mkdir -p build
+rm -rf build
+mkdir build
 
-for repo in common grid simulators; do
-    mkdir -p "$CURRENT_DIRECTORY/build/opm-$repo"
+for repo in common grid; do
+    mkdir build/opm-$repo
     cd "$CURRENT_DIRECTORY/build/opm-$repo"
-    cmake -DUSE_GPU_BRIDGE=0 \
+    cmake -DUSE_MPI=1 \
           -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_INSTALL_PREFIX="$CURRENT_DIRECTORY/build/ThirdParty" \
-          -DCMAKE_PREFIX_PATH="$CURRENT_DIRECTORY/build/ThirdParty;$TRILINOS_ROOT/build" \
-          -DZOLTAN_LIBRARY="$ZOLTAN_LIB" \
-          -DZOLTAN_INCLUDE_DIR="$ZOLTAN_INC" \
+          -DCMAKE_PREFIX_PATH="$OPM_PREFIX_PATH" \
           "$CURRENT_DIRECTORY/opm-$repo"
-    if [[ $repo == simulators ]]; then
-        make -j8 flow
-    else
-        make -j8
-    fi
+    make -j"$NJOBS"
     cd "$CURRENT_DIRECTORY"
 done
+
+mkdir build/opm-simulators
+cd "$CURRENT_DIRECTORY/build/opm-simulators"
+cmake -DUSE_MPI=1 \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_PREFIX_PATH="$OPM_PREFIX_PATH" \
+      "$CURRENT_DIRECTORY/opm-simulators"
+make -j"$NJOBS" flow
+cd "$CURRENT_DIRECTORY"
 
 # ── 4. Generate CPR solver config JSONs ───────────────────────────────────────
 #
