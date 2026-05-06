@@ -46,8 +46,8 @@ fi
 
 # Sweep output directories (freshly generated this run)
 SWEEP_DIR=$SCRIPT_DIR/cpr_sweep_data
-SWEEP_RUN1=$SWEEP_DIR/sweep_run1
-SWEEP_RUN2=$SWEEP_DIR/sweep_run2
+SWEEP_RUN1=$SWEEP_DIR/sweep_run1_fresh
+SWEEP_RUN2=$SWEEP_DIR/sweep_run2_fresh
 SWEEP_SPE11=$SWEEP_DIR/sweep_spe11_fresh
 
 
@@ -231,7 +231,7 @@ run_sweep() {
 if [[ $FRESH_SWEEP -eq 1 ]]; then
     echo "========================================"
     echo "  Step 0 — regenerate sweep data"
-    echo "  Norne + SPE9 : 2 independent runs  (→ sweep_run1, sweep_run2)"
+    echo "  Norne + SPE9 : 2 independent runs  (→ sweep_run1_fresh, sweep_run2_fresh)"
     echo "  SPE11A       : 1 run               (→ sweep_spe11_fresh)"
     echo "  MPI ranks/job: $NPROCS"
     echo "========================================"
@@ -269,7 +269,7 @@ echo "========================================"
 
 if [[ $FRESH_SWEEP -eq 1 ]]; then
     INPUT_CSVS=("$SWEEP_RUN1"/*.csv "$SWEEP_RUN2"/*.csv "$SWEEP_SPE11"/*.csv)
-    echo "  Input : sweep_run1 + sweep_run2 + sweep_spe11_fresh (freshly generated)"
+    echo "  Input : sweep_run1_fresh + sweep_run2_fresh + sweep_spe11_fresh (freshly generated)"
 else
     INPUT_CSVS=("${SWEEP_CSVS[@]}")
     echo "  Input : SWEEP_CSVS (existing local data)"
