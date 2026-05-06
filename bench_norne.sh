@@ -77,18 +77,18 @@ else
     FLOW_CMD=("$FLOW")
 fi
 
-# Sweep CSVs used as training input
-#   sweep2/3 = 2 runs of SPE9+Norne
-#   sweep_spe11 = SPE11A+SPE11B sweep data
-#   sweep5   = 3rd run of SPE9+Norne + well_density + nl_residual_trend (14 feat)
-#   sweep7   = 4th run of SPE9+Norne with all 19 features (new binary)
-SWEEP_CSVS=(
-    $SCRIPT_DIR/cpr_sweep_data/sweep2/*.csv
-    $SCRIPT_DIR/cpr_sweep_data/sweep3/*.csv
-    $SCRIPT_DIR/cpr_sweep_data/sweep_spe11/*.csv
-    # $SCRIPT_DIR/cpr_sweep_data/sweep5/*.csv
-    # $SCRIPT_DIR/cpr_sweep_data/sweep7/*.csv
-)
+# # Sweep CSVs used as training input
+# #   sweep2/3 = 2 runs of SPE9+Norne
+# #   sweep_spe11 = SPE11A+SPE11B sweep data
+# #   sweep5   = 3rd run of SPE9+Norne + well_density + nl_residual_trend (14 feat)
+# #   sweep7   = 4th run of SPE9+Norne with all 19 features (new binary)
+# SWEEP_CSVS=(
+#     $SCRIPT_DIR/cpr_sweep_data/sweep2/*.csv
+#     $SCRIPT_DIR/cpr_sweep_data/sweep3/*.csv
+#     $SCRIPT_DIR/cpr_sweep_data/sweep_spe11/*.csv
+#     # $SCRIPT_DIR/cpr_sweep_data/sweep5/*.csv
+#     # $SCRIPT_DIR/cpr_sweep_data/sweep7/*.csv
+# )
 
 # Intermediate and output files for the training pipeline
 TRAINING_CSV=$SCRIPT_DIR/tmp/cpr_training_data.csv
@@ -284,30 +284,30 @@ policy_summary() {
     ' "$dbg"
 }
 
-# ── training pipeline ────────────────────────────────────────────────────────
-#
-#   Step 1 — collect_sweep_labels.py
-#     Reads all sweep CSVs, groups rows by (deck, episode, newton_iter),
-#     picks the config with the lowest median total_ms as the label,
-#     and writes one row per labeled Newton step to TRAINING_CSV.
-#
-#   Step 2 — architecture search
-#     Trains several hidden-layer widths and picks the one with the best
-#     val accuracy.  All candidates share the same seed so the train/val
-#     split is identical and the comparison is fair.
-#     Candidates: 14→8→24  14→12→24  14→16→24  14→24→24  14→32→24
-#
-#   Step 3 — benchmark with the winning architecture.
+# # ── training pipeline ────────────────────────────────────────────────────────
+# #
+# #   Step 1 — collect_sweep_labels.py
+# #     Reads all sweep CSVs, groups rows by (deck, episode, newton_iter),
+# #     picks the config with the lowest median total_ms as the label,
+# #     and writes one row per labeled Newton step to TRAINING_CSV.
+# #
+# #   Step 2 — architecture search
+# #     Trains several hidden-layer widths and picks the one with the best
+# #     val accuracy.  All candidates share the same seed so the train/val
+# #     split is identical and the comparison is fair.
+# #     Candidates: 14→8→24  14→12→24  14→16→24  14→24→24  14→32→24
+# #
+# #   Step 3 — benchmark with the winning architecture.
 
-echo "========================================"
-echo "  Step 1 — label sweep data"
-echo "  Input CSVs: sweep2/*.csv + sweep3/*.csv + sweep_spe11/*.csv"
-echo "  Output    : $TRAINING_CSV"
-echo "========================================"
-python3 "$SCRIPTS/collect_sweep_labels.py" \
-    --csvs "${SWEEP_CSVS[@]}" \
-    --out  "$TRAINING_CSV" \
-    --min-configs 2
+# echo "========================================"
+# echo "  Step 1 — label sweep data"
+# echo "  Input CSVs: sweep2/*.csv + sweep3/*.csv + sweep_spe11/*.csv"
+# echo "  Output    : $TRAINING_CSV"
+# echo "========================================"
+# python3 "$SCRIPTS/collect_sweep_labels.py" \
+#     --csvs "${SWEEP_CSVS[@]}" \
+#     --out  "$TRAINING_CSV" \
+#     --min-configs 2
 
 # Auto-select best SPE11 baseline from training data.
 # Picks the label that wins the most Newton steps among safe labels (0-15);
