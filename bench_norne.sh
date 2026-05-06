@@ -28,7 +28,14 @@
 
 set -euo pipefail
 
+# When expanding CSV globs, ignore patterns that don't match any files
+# so we don't pass literal '*.csv' strings to Python.
+shopt -s nullglob
+
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+# Run from the script directory so relative paths are predictable
+cd "$SCRIPT_DIR"
 
 FLOW=$SCRIPT_DIR/build/opm-simulators/bin/flow
 SCRIPTS=$SCRIPT_DIR/opm-simulators/doc/neural_cpr
@@ -267,18 +274,32 @@ echo "  Step 1 — label sweep data"
 echo "  Output: $TRAINING_CSV"
 echo "========================================"
 
-if [[ $FRESH_SWEEP -eq 1 ]]; then
-    INPUT_CSVS=("$SWEEP_RUN1"/*.csv "$SWEEP_RUN2"/*.csv "$SWEEP_SPE11"/*.csv)
+# Build input CSV patterns depending on whether we just generated a fresh sweep
+if [[ ${FRESH_SWEEP:-1} -eq 1 ]]; then
+    INPUT_PATTERNS=("$SWEEP_RUN1"/*.csv "$SWEEP_RUN2"/*.csv "$SWEEP_SPE11"/*.csv)
     echo "  Input : sweep_run1_fresh + sweep_run2_fresh + sweep_spe11_fresh (freshly generated)"
 else
-    INPUT_CSVS=("${SWEEP_CSVS[@]}")
+    INPUT_PATTERNS=("${SWEEP_CSVS[@]}")
     echo "  Input : SWEEP_CSVS (existing local data)"
 fi
 
-python3 "$SCRIPTS/collect_sweep_labels.py" \
-    --csvs "${INPUT_CSVS[@]}" \
-    --out  "$TRAINING_CSV" \
-    --min-configs 2
+# Expand patterns and keep only existing files (nullglob prevents literal patterns)
+EXISTING_SWEEP_CSVS=()
+for pat in "${INPUT_PATTERNS[@]}"; do
+    for f in $pat; do
+        [[ -f "$f" ]] || continue
+        EXISTING_SWEEP_CSVS+=("$f")
+    done
+done
+
+if [[ ${#EXISTING_SWEEP_CSVS[@]} -eq 0 ]]; then
+    echo "Warning: no sweep CSVs found (patterns: ${INPUT_PATTERNS[*]}) — skipping label collection"
+else
+    python3 "$SCRIPTS/collect_sweep_labels.py" \
+        --csvs "${EXISTING_SWEEP_CSVS[@]}" \
+        --out  "$TRAINING_CSV" \
+        --min-configs 2
+fi
 
 # Auto-select best SPE11 baseline: most-winning label among safe labels (0-15)
 SPE11PYOPM_SOLVER_LABEL=$(python3 -c "
@@ -322,22 +343,22 @@ for hidden in 8 12 16 24 32; do
             --activation relu \
             --epochs     200 \
             --lr         0.001 \
-            --out        "/tmp/cpr_arch_h${hidden}.model" \
+            --out        "$SCRIPT_DIR/tmp/cpr_arch_h${hidden}.model" \
             --format     binary \
             --seed       42 2>&1 \
         | grep "^Final" | grep -oE 'val acc: [0-9.]+' | grep -oE '[0-9.]+' \
-        > "/tmp/cpr_arch_h${hidden}.acc"
+        > "$SCRIPT_DIR/tmp/cpr_arch_h${hidden}.acc"
     ) &
 done
 wait
 
 for hidden in 8 12 16 24 32; do
-    val_acc=$(cat "/tmp/cpr_arch_h${hidden}.acc" 2>/dev/null || true)
+    val_acc=$(cat "$SCRIPT_DIR/tmp/cpr_arch_h${hidden}.acc" 2>/dev/null || true)
     printf "  %s→%d→24  val_acc=%s\n" "$n_features" "$hidden" "${val_acc:--}"
     if awk "BEGIN { exit !(${val_acc:-0} > $best_val) }"; then
         best_val=${val_acc:-0}
         best_hidden=$hidden
-        cp "/tmp/cpr_arch_h${hidden}.model" "$MODEL"
+        cp "$SCRIPT_DIR/tmp/cpr_arch_h${hidden}.model" "$MODEL"
     fi
 done
 
