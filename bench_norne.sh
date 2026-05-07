@@ -88,6 +88,14 @@ else
 fi
 SPE11PYOPM_AVOID_LABEL23=${SPE11PYOPM_AVOID_LABEL23:-1}
 
+# If the chosen configs dir is missing (e.g., user set FRESH_SWEEP=0 but
+# only the freshly generated sweep exists), fall back to the fresh sweep
+# configs to avoid failures when the non-fresh path is absent.
+if [[ ! -d "$SPE11PYOPM_CONFIGS_DIR" && -d "$SWEEP_SPE11/configs" ]]; then
+    echo "Warning: SPE11 configs dir $SPE11PYOPM_CONFIGS_DIR missing; falling back to $SWEEP_SPE11/configs"
+    SPE11PYOPM_CONFIGS_DIR=$SWEEP_SPE11/configs
+fi
+
 mkdir -p "$SCRIPT_DIR/tmp"
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -308,7 +316,22 @@ try:
     rows = [r for r in csv.DictReader(open('$TRAINING_CSV')) if 'spe11' in r.get('deck','').lower()]
     safe = [r['label'] for r in rows if int(r['label']) < 16]
     pool = safe if safe else [r['label'] for r in rows]
-    best = collections.Counter(pool).most_common(1)[0][0] if pool else '9'
+    # Avoid using label 08 for SPE11A by skipping it when choosing the most common label.
+    if pool:
+        cnt = collections.Counter(pool)
+        best = None
+        for lbl, _ in cnt.most_common():
+            try:
+                if int(lbl) == 8:
+                    continue
+            except Exception:
+                pass
+            best = lbl
+            break
+        if best is None:
+            best = '9'
+    else:
+        best = '9'
     print(f'{int(best):02d}')
 except Exception as e:
     sys.stderr.write(f'Warning: SPE11 label auto-select failed: {e}\n')
@@ -399,6 +422,16 @@ unset OPM_NEURAL_CPR_WEIGHTS
 
 echo ""
 echo "── SPE11A (spe11pyopm) ─────────────────"
+# SPE11 is sensitive to MPI rank counts; avoid too many ranks that lead to
+# zero-cell processes. Temporarily reduce ranks for SPE11 runs if necessary.
+old_FLOW_CMD=("${FLOW_CMD[@]}")
+SPE11_NPROCS=${SPE11_NPROCS:-$NPROCS}
+if (( SPE11_NPROCS > 48 )); then SPE11_NPROCS=48; fi
+if (( SPE11_NPROCS > 1 )); then
+    FLOW_CMD=(mpirun -np "$SPE11_NPROCS" "$FLOW")
+else
+    FLOW_CMD=("$FLOW")
+fi
 echo "  flow_default: no solver flags (cprw + trueimpes + paroverilu0 + ilu0-AMG, reuse-setup=4)"
 unset OPM_NEURAL_CPR_WEIGHTS
 run_deck "flow_default" "$SPE11PYOPM_DECK" "$OUTDIR/spe11pyopm_flow_default"
@@ -410,11 +443,15 @@ run_deck "baseline"     "$SPE11PYOPM_DECK" "$OUTDIR/spe11pyopm_baseline" \
 
 SPE11PYOPM_NEURAL_OUT="$OUTDIR/spe11pyopm_neural"
 export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
-export OPM_NEURAL_CPR_FORBID_LABELS=16,17,18,19,20,21,22,23
+export OPM_NEURAL_CPR_FORBID_LABELS=8,16,17,18,19,20,21,22,23
 echo "  neural base solver: $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels 16-23 forbidden"
+echo "  Debug: OPM_NEURAL_CPR_WEIGHTS=$OPM_NEURAL_CPR_WEIGHTS"
+ls -l "$OPM_NEURAL_CPR_WEIGHTS" || true
 run_deck "neural-v3"    "$SPE11PYOPM_DECK" "$SPE11PYOPM_NEURAL_OUT" \
     --linear-solver="$SPE11PYOPM_SOLVER" \
     --cpr-reuse-setup=0
+echo "  Debug: grep NeuralCprPolicy in DBG (if present):"
+grep "NeuralCprPolicy" "$SPE11PYOPM_NEURAL_OUT"/SPE11A.DBG 2>/dev/null || true
 
 SPE11PYOPM_NEURAL_REUSE_OUT="$OUTDIR/spe11pyopm_neural_reuse"
 echo "  neural-reuse: same guard, with cpr-reuse-setup=4 and cpr-reuse-interval=10"
@@ -424,6 +461,9 @@ run_deck "neural-reuse" "$SPE11PYOPM_DECK" "$SPE11PYOPM_NEURAL_REUSE_OUT" \
     --cpr-reuse-interval=10
 unset OPM_NEURAL_CPR_WEIGHTS
 unset OPM_NEURAL_CPR_FORBID_LABELS
+
+# restore the previous FLOW_CMD (MPI ranks) for subsequent runs
+FLOW_CMD=("${old_FLOW_CMD[@]}")
 
 # ── results ──────────────────────────────────────────────────────────────────
 
