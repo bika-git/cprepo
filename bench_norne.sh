@@ -89,6 +89,7 @@ SWEEP_CSVS=(
 # Intermediate and output files
 TRAINING_CSV=$SCRIPT_DIR/tmp/cpr_training_data.csv
 MODEL=${MODEL:-$SCRIPT_DIR/tmp/cpr_policy_retrained.model}
+ENCODER_PRETRAINED=$SCRIPT_DIR/tmp/cpr_encoder_pretrained.npz
 OUTDIR=$SCRIPT_DIR/tmp/bench_neural_cpr
 
 # Decks
@@ -479,10 +480,20 @@ print(len([k for k in r if k not in ('deck','best_config','label')]))" \
 echo ""
 echo "========================================"
 if [[ $SKIP_TRAIN -eq 0 ]]; then
-    echo "  Step 2 — architecture search"
+    echo "  Step 2 — pre-training encoder + architecture search"
     echo "  Candidates: hidden = 8, 12, 16, 24, 32"
     echo "========================================"
 
+    # ── Phase 1: pre-train encoder on raw sweep rows (regression task) ──
+    echo "  Phase 1: pre-training encoder on raw sweep CSVs ..."
+    python3 "$SCRIPTS/pretrain_cpr_policy.py" \
+        --csvs "${EXISTING_SWEEP_CSVS[@]}" \
+        --out  "$ENCODER_PRETRAINED" \
+        --hidden 24 --depth 1 \
+        --epochs 30 --seed 42
+    echo ""
+
+    # ── Phase 2: architecture search with warm-started encoder ──
     best_hidden=32
     best_depth=1
     best_val=0.0
@@ -504,6 +515,7 @@ if [[ $SKIP_TRAIN -eq 0 ]]; then
                 --lr         0.001 \
                 --out        "$SCRIPT_DIR/tmp/cpr_arch_h${hidden}_d${depth}.model" \
                 --format     binary \
+                --pretrained "$ENCODER_PRETRAINED" \
                 --seed       42 2>&1 \
             | grep "^Final" | grep -oE 'val acc: [0-9.]+' | grep -oE '[0-9.]+' \
             > "$SCRIPT_DIR/tmp/cpr_arch_h${hidden}_d${depth}.acc"
