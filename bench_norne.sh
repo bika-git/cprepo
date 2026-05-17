@@ -25,6 +25,8 @@
 #   ./bench_norne.sh                              # serial, fresh sweep
 #   NPROCS=8 OMPI_MCA_btl=self,sm ./bench_norne.sh   # MPI, fresh sweep
 #   FRESH_SWEEP=0 ./bench_norne.sh                # skip sweep, reuse existing cpr_sweep_data/
+#   FRESH_SWEEP=0 SKIP_TRAIN=1 ./bench_norne.sh   # skip sweep+train, benchmark with existing model
+#   MODEL=/path/to/saved.model SKIP_TRAIN=1 FRESH_SWEEP=0 ./bench_norne.sh  # use a specific model
 #   TUNE_SPE11_REUSE=1 ./bench_norne.sh           # grid-search reuse-setup × reuse-interval for SPE11
 #   BENCH_HELDOUT=1 ./bench_norne.sh              # also test Sleipner/SPE10 held-out decks
 
@@ -44,12 +46,14 @@ SCRIPTS=$SCRIPT_DIR/opm-simulators/doc/neural_cpr
 
 # Set FRESH_SWEEP=0 to skip Step 0 and reuse existing data in cpr_sweep_data/
 FRESH_SWEEP=${FRESH_SWEEP:-1}
+# Set SKIP_TRAIN=1 to skip Steps 1-2 (label+train) and benchmark with the existing MODEL file
+SKIP_TRAIN=${SKIP_TRAIN:-0}
 # Set TUNE_SPE11_REUSE=1 to grid-search cpr-reuse-setup x cpr-reuse-interval for SPE11 neural-reuse
 TUNE_SPE11_REUSE=${TUNE_SPE11_REUSE:-0}
 # Set BENCH_HELDOUT=1 to benchmark decks not used in training.
 BENCH_HELDOUT=${BENCH_HELDOUT:-0}
-# Supported case names: sleipner spe10model1 spe10mod01 spe10model2 spe10mod02
-HELDOUT_CASES=${HELDOUT_CASES:-"sleipner spe10model1"}
+# Supported case names: spe10model1 spe10mod01 spe10model2 spe10mod02
+HELDOUT_CASES=${HELDOUT_CASES:-"spe10model1"}
 
 # MPI setup — NPROCS controls ranks per flow call in both sweep and benchmark
 NPROCS=${NPROCS:-1}
@@ -66,8 +70,8 @@ SWEEP_RUN2=$SWEEP_DIR/sweep_run2_fresh
 SWEEP_SPE11=$SWEEP_DIR/sweep_spe11_fresh
 SWEEP_SPE10MODEL1=$SWEEP_DIR/sweep_spe10model1_fresh
 SWEEP_SPE10MOD01=$SWEEP_DIR/sweep_spe10mod01_fresh
-SWEEP_SPE10MODEL2=$SWEEP_DIR/sweep_spe10model2_fresh
-SWEEP_SLEIPNER=$SWEEP_DIR/sweep_sleipner_fresh
+# SWEEP_SPE10MODEL2=$SWEEP_DIR/sweep_spe10model2_fresh
+# SWEEP_SLEIPNER=$SWEEP_DIR/sweep_sleipner_fresh
 
 
 # Sweep CSVs used as training input (all 12-feature format)
@@ -84,18 +88,22 @@ SWEEP_CSVS=(
 
 # Intermediate and output files
 TRAINING_CSV=$SCRIPT_DIR/tmp/cpr_training_data.csv
-MODEL=$SCRIPT_DIR/tmp/cpr_policy_retrained.model
+MODEL=${MODEL:-$SCRIPT_DIR/tmp/cpr_policy_retrained.model}
 OUTDIR=$SCRIPT_DIR/tmp/bench_neural_cpr
 
 # Decks
 NORNE_DECK=$SCRIPT_DIR/opm-tests/norne/NORNE_ATW2013.DATA
 SPE9_DECK=$SCRIPT_DIR/opm-tests/spe9/SPE9.DATA
 SPE11PYOPM_DECK=$SCRIPT_DIR/opm-tests/spe11pyopm/SPE11A.DATA
+SPE11B_DECK=$SCRIPT_DIR/opm-tests/spe11b/SPE11B.DATA
 SLEIPNER_DECK=$SCRIPT_DIR/opm-tests/sleipner/SLEIPNER_ORG.DATA
 SPE10MODEL1_DECK=$SCRIPT_DIR/opm-tests/spe10model1/SPE10_MODEL1.DATA
 SPE10MOD01_DECK=$SCRIPT_DIR/opm-tests/spe10/SPE10-MOD01-01.DATA
 SPE10MODEL2_DECK=$SCRIPT_DIR/opm-tests/spe10model2/SPE10_MODEL2.DATA
 SPE10MOD02_DECK=$SCRIPT_DIR/opm-tests/spe10/SPE10-MOD02-01.DATA
+NORNE_MSW_DECK=$SCRIPT_DIR/opm-tests/norne/NORNE_ATW2013_1A_MSW.DATA
+DROGON_HIST_DECK=$SCRIPT_DIR/opm-tests/drogon/model/DROGON_HIST.DATA
+DROGON_PRED_DECK=$SCRIPT_DIR/opm-tests/drogon/model/DROGON_PRED.DATA
 
 # SPE11 solver configs: fresh sweep dir when regenerating, existing dir otherwise
 if [[ ${FRESH_SWEEP:-1} -eq 1 ]]; then
@@ -277,11 +285,11 @@ heldout_case_info() {
     HELDOUT_STEM=
 
     case "$case_name" in
-        sleipner)
-            HELDOUT_TITLE="Sleipner"
-            HELDOUT_DECK=$SLEIPNER_DECK
-            HELDOUT_STEM="heldout_sleipner"
-            ;;
+        # sleipner)
+        #     HELDOUT_TITLE="Sleipner"
+        #     HELDOUT_DECK=$SLEIPNER_DECK
+        #     HELDOUT_STEM="heldout_sleipner"
+        #     ;;
         spe10model1)
             HELDOUT_TITLE="SPE10 model1"
             HELDOUT_DECK=$SPE10MODEL1_DECK
@@ -292,11 +300,11 @@ heldout_case_info() {
             HELDOUT_DECK=$SPE10MOD01_DECK
             HELDOUT_STEM="heldout_spe10mod01"
             ;;
-        spe10model2)
-            HELDOUT_TITLE="SPE10 model2"
-            HELDOUT_DECK=$SPE10MODEL2_DECK
-            HELDOUT_STEM="heldout_spe10model2"
-            ;;
+        # spe10model2)
+        #     HELDOUT_TITLE="SPE10 model2"
+        #     HELDOUT_DECK=$SPE10MODEL2_DECK
+        #     HELDOUT_STEM="heldout_spe10model2"
+        #     ;;
         spe10mod02)
             HELDOUT_TITLE="SPE10 MOD02-01"
             HELDOUT_DECK=$SPE10MOD02_DECK
@@ -313,17 +321,17 @@ heldout_case_info() {
         return 1
     fi
 
-    if [[ "$case_name" == "sleipner" ]]; then
-        local sleipner_grid=$SCRIPT_DIR/opm-tests/sleipner/Sleipner_Reference_Model_cleaned.grdecl
-        if [[ ! -f "$sleipner_grid" && -f "${sleipner_grid}.gz" ]]; then
-            echo "  Preparing Sleipner include: $(basename "$sleipner_grid")"
-            gzip -dk "${sleipner_grid}.gz"
-        fi
-        if [[ ! -f "$sleipner_grid" ]]; then
-            echo "Warning: Sleipner include missing: $sleipner_grid (skipping)" >&2
-            return 1
-        fi
-    fi
+    # if [[ "$case_name" == "sleipner" ]]; then
+    #     local sleipner_grid=$SCRIPT_DIR/opm-tests/sleipner/Sleipner_Reference_Model_cleaned.grdecl
+    #     if [[ ! -f "$sleipner_grid" && -f "${sleipner_grid}.gz" ]]; then
+    #         echo "  Preparing Sleipner include: $(basename "$sleipner_grid")"
+    #         gzip -dk "${sleipner_grid}.gz"
+    #     fi
+    #     if [[ ! -f "$sleipner_grid" ]]; then
+    #         echo "Warning: Sleipner include missing: $sleipner_grid (skipping)" >&2
+    #         return 1
+    #     fi
+    # fi
 }
 
 # ── Step 0 — regenerate sweeps ───────────────────────────────────────────────
@@ -342,11 +350,10 @@ if [[ $FRESH_SWEEP -eq 1 ]]; then
     echo "========================================"
     echo "  Step 0 — regenerate sweep data"
     echo "  Norne + SPE9  : 2 independent runs  (→ sweep_run1_fresh, sweep_run2_fresh)"
-    echo "  SPE11A        : 1 run               (→ sweep_spe11_fresh)"
+    echo "  SPE11A+B      : 1 run               (→ sweep_spe11_fresh)"
     echo "  SPE10 model1  : 1 run               (→ sweep_spe10model1_fresh)"
     echo "  SPE10 MOD01   : 1 run               (→ sweep_spe10mod01_fresh)"
-    echo "  SPE10 model2  : 1 run               (→ sweep_spe10model2_fresh)"
-    echo "  Sleipner      : 1 run               (→ sweep_sleipner_fresh)"
+    # echo "  SPE10 model2  : 1 run               (→ sweep_spe10model2_fresh)"
     echo "  MPI ranks/job: $NPROCS"
     echo "========================================"
 
@@ -356,8 +363,8 @@ if [[ $FRESH_SWEEP -eq 1 ]]; then
     run_sweep "Norne + SPE9 (run 2)" "$SWEEP_RUN2" \
         --decks "$NORNE_DECK" "$SPE9_DECK"
 
-    run_sweep "SPE11A" "$SWEEP_SPE11" \
-        --decks "$SPE11PYOPM_DECK"
+    run_sweep "SPE11A+B" "$SWEEP_SPE11" \
+        --decks "$SPE11PYOPM_DECK" "$SPE11B_DECK"
 
     run_sweep "SPE10 model1" "$SWEEP_SPE10MODEL1" \
         --decks "$SPE10MODEL1_DECK"
@@ -365,11 +372,11 @@ if [[ $FRESH_SWEEP -eq 1 ]]; then
     run_sweep "SPE10 MOD01" "$SWEEP_SPE10MOD01" \
         --decks "$SPE10MOD01_DECK"
 
-    run_sweep "SPE10 model2" "$SWEEP_SPE10MODEL2" \
-        --decks "$SPE10MODEL2_DECK"
+    # run_sweep "SPE10 model2" "$SWEEP_SPE10MODEL2" \
+    #     --decks "$SPE10MODEL2_DECK"
 
-    run_sweep "Sleipner" "$SWEEP_SLEIPNER" \
-        --decks "$SLEIPNER_DECK"
+    # run_sweep "Sleipner" "$SWEEP_SLEIPNER" \
+    #     --decks "$SLEIPNER_DECK"
 else
     echo "========================================"
     echo "  Step 0 — SKIPPED (FRESH_SWEEP=0, using SWEEP_CSVS)"
@@ -389,37 +396,45 @@ fi
 
 echo ""
 echo "========================================"
-echo "  Step 1 — label sweep data"
-echo "  Output: $TRAINING_CSV"
-echo "========================================"
+if [[ $SKIP_TRAIN -eq 0 ]]; then
+    echo "  Step 1 — label sweep data"
+    echo "  Output: $TRAINING_CSV"
+    echo "========================================"
 
-# Build input CSV patterns depending on whether we just generated a fresh sweep
-if [[ ${FRESH_SWEEP:-1} -eq 1 ]]; then
-    INPUT_PATTERNS=("$SWEEP_RUN1"/*.csv "$SWEEP_RUN2"/*.csv "$SWEEP_SPE11"/*.csv \
-                    "$SWEEP_SPE10MODEL1"/*.csv "$SWEEP_SPE10MOD01"/*.csv \
-                    "$SWEEP_SPE10MODEL2"/*.csv "$SWEEP_SLEIPNER"/*.csv)
-    echo "  Input : sweep_run1/2_fresh + sweep_spe11_fresh + sweep_spe10model1/mod01/model2_fresh + sweep_sleipner_fresh"
-else
-    INPUT_PATTERNS=("${SWEEP_CSVS[@]}")
-    echo "  Input : SWEEP_CSVS (existing local data)"
-fi
+    # Build input CSV patterns depending on whether we just generated a fresh sweep
+    if [[ ${FRESH_SWEEP:-1} -eq 1 ]]; then
+        INPUT_PATTERNS=("$SWEEP_RUN1"/*.csv "$SWEEP_RUN2"/*.csv "$SWEEP_SPE11"/*.csv \
+                        "$SWEEP_SPE10MODEL1"/*.csv "$SWEEP_SPE10MOD01"/*.csv)
+        echo "  Input : sweep_run1/2_fresh + sweep_spe11_fresh + sweep_spe10model1/mod01_fresh"
+    else
+        INPUT_PATTERNS=("${SWEEP_CSVS[@]}")
+        echo "  Input : SWEEP_CSVS (existing local data)"
+    fi
 
-# Expand patterns and keep only existing files (nullglob prevents literal patterns)
-EXISTING_SWEEP_CSVS=()
-for pat in "${INPUT_PATTERNS[@]}"; do
-    for f in $pat; do
-        [[ -f "$f" ]] || continue
-        EXISTING_SWEEP_CSVS+=("$f")
+    # Expand patterns and keep only existing files (nullglob prevents literal patterns)
+    EXISTING_SWEEP_CSVS=()
+    for pat in "${INPUT_PATTERNS[@]}"; do
+        for f in $pat; do
+            [[ -f "$f" ]] || continue
+            EXISTING_SWEEP_CSVS+=("$f")
+        done
     done
-done
 
-if [[ ${#EXISTING_SWEEP_CSVS[@]} -eq 0 ]]; then
-    echo "Warning: no sweep CSVs found (patterns: ${INPUT_PATTERNS[*]}) — skipping label collection"
+    if [[ ${#EXISTING_SWEEP_CSVS[@]} -eq 0 ]]; then
+        echo "Warning: no sweep CSVs found (patterns: ${INPUT_PATTERNS[*]}) — skipping label collection"
+    else
+        python3 "$SCRIPTS/collect_sweep_labels.py" \
+            --csvs "${EXISTING_SWEEP_CSVS[@]}" \
+            --out  "$TRAINING_CSV" \
+            --min-configs 2
+    fi
 else
-    python3 "$SCRIPTS/collect_sweep_labels.py" \
-        --csvs "${EXISTING_SWEEP_CSVS[@]}" \
-        --out  "$TRAINING_CSV" \
-        --min-configs 2
+    echo "  Step 1 — SKIPPED (SKIP_TRAIN=1, reusing $TRAINING_CSV)"
+    echo "========================================"
+    if [[ ! -f "$TRAINING_CSV" ]]; then
+        echo "ERROR: $TRAINING_CSV missing — run once without SKIP_TRAIN=1 first" >&2
+        exit 1
+    fi
 fi
 
 # Auto-select best SPE11 baseline: most-winning label among safe labels (0-15)
@@ -455,58 +470,84 @@ echo "  Auto-selected SPE11 baseline: label_${SPE11PYOPM_SOLVER_LABEL} ($(label_
 
 # ── Step 2 — architecture search ─────────────────────────────────────────────
 
-echo ""
-echo "========================================"
-echo "  Step 2 — architecture search"
-echo "  Candidates: hidden = 8, 12, 16, 24, 32"
-echo "========================================"
-
-best_hidden=32
-best_val=0.0
-
 n_features=$(python3 -c "
 import csv
 r = next(csv.DictReader(open('$TRAINING_CSV')))
 print(len([k for k in r if k not in ('deck','best_config','label')]))" \
 2>/dev/null || echo 12)
-echo "  Input features detected: ${n_features}"
-
-for hidden in 8 12 16 24 32; do
-    (
-        python3 "$SCRIPTS/train_cpr_policy.py" \
-            --data       "$TRAINING_CSV" \
-            --hidden     "$hidden" \
-            --activation relu \
-            --epochs     200 \
-            --lr         0.001 \
-            --out        "$SCRIPT_DIR/tmp/cpr_arch_h${hidden}.model" \
-            --format     binary \
-            --seed       42 2>&1 \
-        | grep "^Final" | grep -oE 'val acc: [0-9.]+' | grep -oE '[0-9.]+' \
-        > "$SCRIPT_DIR/tmp/cpr_arch_h${hidden}.acc"
-    ) &
-done
-wait
-
-for hidden in 8 12 16 24 32; do
-    val_acc=$(cat "$SCRIPT_DIR/tmp/cpr_arch_h${hidden}.acc" 2>/dev/null || true)
-    printf "  %s→%d→24  val_acc=%s\n" "$n_features" "$hidden" "${val_acc:--}"
-    if awk "BEGIN { exit !(${val_acc:-0} > $best_val) }"; then
-        best_val=${val_acc:-0}
-        best_hidden=$hidden
-        cp "$SCRIPT_DIR/tmp/cpr_arch_h${hidden}.model" "$MODEL"
-    fi
-done
 
 echo ""
-echo "  Best arch : ${n_features}→${best_hidden}→24  (val_acc=${best_val})"
-echo "  Model written to: $MODEL"
+echo "========================================"
+if [[ $SKIP_TRAIN -eq 0 ]]; then
+    echo "  Step 2 — architecture search"
+    echo "  Candidates: hidden = 8, 12, 16, 24, 32"
+    echo "========================================"
+
+    best_hidden=32
+    best_depth=1
+    best_val=0.0
+    best_arch_str="${n_features}→32→24"
+    echo "  Input features detected: ${n_features}"
+    echo "  Candidates: depth=1 h∈{8,12,16,24,32}  depth=2 h∈{16,24,32}"
+
+    # depth=1: all widths; depth=2: only larger widths (small h with 2 layers overfits)
+    arch_specs=("8 1" "12 1" "16 1" "24 1" "32 1" "16 2" "24 2" "32 2")
+    for spec in "${arch_specs[@]}"; do
+        hidden=${spec%% *}; depth=${spec##* }
+        (
+            python3 "$SCRIPTS/train_cpr_policy.py" \
+                --data       "$TRAINING_CSV" \
+                --hidden     "$hidden" \
+                --depth      "$depth" \
+                --activation relu \
+                --epochs     200 \
+                --lr         0.001 \
+                --out        "$SCRIPT_DIR/tmp/cpr_arch_h${hidden}_d${depth}.model" \
+                --format     binary \
+                --seed       42 2>&1 \
+            | grep "^Final" | grep -oE 'val acc: [0-9.]+' | grep -oE '[0-9.]+' \
+            > "$SCRIPT_DIR/tmp/cpr_arch_h${hidden}_d${depth}.acc"
+        ) &
+    done
+    wait
+
+    for spec in "${arch_specs[@]}"; do
+        hidden=${spec%% *}; depth=${spec##* }
+        val_acc=$(cat "$SCRIPT_DIR/tmp/cpr_arch_h${hidden}_d${depth}.acc" 2>/dev/null || true)
+        hidden_chain=$(printf '%s' "$hidden"; for (( i=1; i<depth; i++ )); do printf '→%s' "$hidden"; done)
+        arch_label="${n_features}→${hidden_chain}→24"
+        printf "  %-28s  val_acc=%s\n" "$arch_label" "${val_acc:--}"
+        if awk "BEGIN { exit !(${val_acc:-0} > $best_val) }"; then
+            best_val=${val_acc:-0}
+            best_hidden=$hidden
+            best_depth=$depth
+            best_arch_str="$arch_label"
+            cp "$SCRIPT_DIR/tmp/cpr_arch_h${hidden}_d${depth}.model" "$MODEL"
+        fi
+    done
+
+    echo ""
+    echo "  Best arch : ${best_arch_str}  (val_acc=${best_val})"
+    echo "  Model written to: $MODEL"
+else
+    echo "  Step 2 — SKIPPED (SKIP_TRAIN=1, using saved model)"
+    echo "========================================"
+    if [[ ! -f "$MODEL" ]]; then
+        echo "ERROR: $MODEL missing — run once without SKIP_TRAIN=1 first" >&2
+        exit 1
+    fi
+    best_hidden="saved"
+    best_depth="saved"
+    best_arch_str="saved"
+    best_val="saved"
+    echo "  Model: $MODEL ($(wc -c < "$MODEL") bytes)"
+fi
 
 # ── Step 3 — benchmark ───────────────────────────────────────────────────────
 
 echo ""
 echo "========================================"
-echo "  Step 3 — benchmark  (flow_default vs best arch: ${n_features}→${best_hidden}→24)"
+echo "  Step 3 — benchmark  (flow_default vs arch: ${best_arch_str})"
 echo "  Model: $MODEL"
 echo "  Run labels:"
 echo "    Norne/SPE9/SPE10model1 flow_default : $(label_desc none)"
@@ -533,6 +574,50 @@ run_deck "neural-v3"    "$NORNE_DECK" "$OUTDIR/norne_neural"
 unset OPM_NEURAL_CPR_WEIGHTS
 
 echo ""
+echo "── Norne MSW (1A) ───────────────────────"
+unset OPM_NEURAL_CPR_WEIGHTS
+run_deck "flow_default" "$NORNE_MSW_DECK" "$OUTDIR/norne_msw_flow_default"
+export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
+run_deck "neural-v3"    "$NORNE_MSW_DECK" "$OUTDIR/norne_msw_neural"
+run_deck "neural-reuse" "$NORNE_MSW_DECK" "$OUTDIR/norne_msw_neural_reuse" \
+    --cpr-reuse-setup=4 \
+    --cpr-reuse-interval=10
+unset OPM_NEURAL_CPR_WEIGHTS
+
+echo ""
+echo "── Drogon HIST ─────────────────────────"
+unset OPM_NEURAL_CPR_WEIGHTS
+run_deck "flow_default" "$DROGON_HIST_DECK" "$OUTDIR/drogon_hist_flow_default"
+export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
+run_deck "neural-v3"    "$DROGON_HIST_DECK" "$OUTDIR/drogon_hist_neural"
+run_deck "neural-reuse" "$DROGON_HIST_DECK" "$OUTDIR/drogon_hist_neural_reuse" \
+    --cpr-reuse-setup=4 \
+    --cpr-reuse-interval=10
+unset OPM_NEURAL_CPR_WEIGHTS
+
+echo ""
+echo "── Drogon PRED ─────────────────────────"
+# PRED restarts from HIST step 82 and expects DROGON_HIST.UNRST next to the deck.
+# Symlink the best available HIST output so PRED can find it.
+DROGON_HIST_UNRST_LINK=$(dirname "$DROGON_PRED_DECK")/DROGON_HIST.UNRST
+for hist_dir in "$OUTDIR/drogon_hist_flow_default" "$OUTDIR/drogon_hist_neural" "$OUTDIR/drogon_hist_neural_reuse"; do
+    if [[ -f "$hist_dir/DROGON_HIST.UNRST" ]]; then
+        ln -sf "$hist_dir/DROGON_HIST.UNRST" "$DROGON_HIST_UNRST_LINK"
+        echo "  Linked HIST restart: $hist_dir/DROGON_HIST.UNRST"
+        break
+    fi
+done
+unset OPM_NEURAL_CPR_WEIGHTS
+run_deck "flow_default" "$DROGON_PRED_DECK" "$OUTDIR/drogon_pred_flow_default"
+export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
+run_deck "neural-v3"    "$DROGON_PRED_DECK" "$OUTDIR/drogon_pred_neural"
+run_deck "neural-reuse" "$DROGON_PRED_DECK" "$OUTDIR/drogon_pred_neural_reuse" \
+    --cpr-reuse-setup=4 \
+    --cpr-reuse-interval=10
+unset OPM_NEURAL_CPR_WEIGHTS
+rm -f "$DROGON_HIST_UNRST_LINK"
+
+echo ""
 echo "── SPE9 ────────────────────────────────"
 unset OPM_NEURAL_CPR_WEIGHTS
 run_deck "flow_default" "$SPE9_DECK" "$OUTDIR/spe9_flow_default"
@@ -556,21 +641,21 @@ export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
 run_deck "neural-v3"    "$SPE10MOD01_DECK" "$OUTDIR/spe10mod01_neural"
 unset OPM_NEURAL_CPR_WEIGHTS
 
-echo ""
-echo "── SPE10 model2 ─────────────────────────"
-unset OPM_NEURAL_CPR_WEIGHTS
-run_deck "flow_default" "$SPE10MODEL2_DECK" "$OUTDIR/spe10model2_flow_default"
-export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
-run_deck "neural-v3"    "$SPE10MODEL2_DECK" "$OUTDIR/spe10model2_neural"
-unset OPM_NEURAL_CPR_WEIGHTS
+# echo ""
+# echo "── SPE10 model2 ─────────────────────────"
+# unset OPM_NEURAL_CPR_WEIGHTS
+# run_deck "flow_default" "$SPE10MODEL2_DECK" "$OUTDIR/spe10model2_flow_default"
+# export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
+# run_deck "neural-v3"    "$SPE10MODEL2_DECK" "$OUTDIR/spe10model2_neural"
+# unset OPM_NEURAL_CPR_WEIGHTS
 
-echo ""
-echo "── Sleipner ─────────────────────────────"
-unset OPM_NEURAL_CPR_WEIGHTS
-run_deck "flow_default" "$SLEIPNER_DECK" "$OUTDIR/sleipner_flow_default"
-export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
-run_deck "neural-v3"    "$SLEIPNER_DECK" "$OUTDIR/sleipner_neural"
-unset OPM_NEURAL_CPR_WEIGHTS
+# echo ""
+# echo "── Sleipner ─────────────────────────────"
+# unset OPM_NEURAL_CPR_WEIGHTS
+# run_deck "flow_default" "$SLEIPNER_DECK" "$OUTDIR/sleipner_flow_default"
+# export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
+# run_deck "neural-v3"    "$SLEIPNER_DECK" "$OUTDIR/sleipner_neural"
+# unset OPM_NEURAL_CPR_WEIGHTS
 
 echo ""
 echo "── SPE11A (spe11pyopm) ─────────────────"
@@ -638,6 +723,37 @@ else
         --cpr-reuse-setup="$best_reuse_setup" \
         --cpr-reuse-interval="$best_reuse_interval"
 fi
+
+echo ""
+echo "── SPE11B ──────────────────────────────"
+echo "  flow_default: no solver flags (cprw + trueimpes + paroverilu0 + ilu0-AMG, reuse-setup=4)"
+unset OPM_NEURAL_CPR_WEIGHTS
+run_deck "flow_default" "$SPE11B_DECK" "$OUTDIR/spe11b_flow_default"
+
+echo "  baseline fixed solver: $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); cpr-reuse-setup=0"
+run_deck "baseline"     "$SPE11B_DECK" "$OUTDIR/spe11b_baseline" \
+    --linear-solver="$SPE11PYOPM_SOLVER" \
+    --cpr-reuse-setup=0
+
+SPE11B_NEURAL_OUT="$OUTDIR/spe11b_neural"
+export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
+# SPE11B neural-v3 crashes regardless of label when cpr-reuse-setup=0:
+# the AMG is rebuilt every Newton step and becomes unstable late in the
+# thermal CO2 simulation. Known limitation — neural-reuse works fine.
+export OPM_NEURAL_CPR_FORBID_LABELS=8,16,17,18,19,20,21,22,23
+echo "  neural base solver: $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels 8,16-23 forbidden"
+run_deck "neural-v3"    "$SPE11B_DECK" "$SPE11B_NEURAL_OUT" \
+    --linear-solver="$SPE11PYOPM_SOLVER" \
+    --cpr-reuse-setup=0
+
+SPE11B_NEURAL_REUSE_OUT="$OUTDIR/spe11b_neural_reuse"
+# Reuse: restore standard forbid list (label_11 works fine with AMG reuse)
+export OPM_NEURAL_CPR_FORBID_LABELS=8,16,17,18,19,20,21,22,23
+echo "  neural-reuse: standard guard (labels 8,16-23 forbidden); cpr-reuse-setup=${best_reuse_setup} cpr-reuse-interval=${best_reuse_interval}"
+run_deck "neural-reuse" "$SPE11B_DECK" "$SPE11B_NEURAL_REUSE_OUT" \
+    --linear-solver="$SPE11PYOPM_SOLVER" \
+    --cpr-reuse-setup="$best_reuse_setup" \
+    --cpr-reuse-interval="$best_reuse_interval"
 unset OPM_NEURAL_CPR_WEIGHTS
 unset OPM_NEURAL_CPR_FORBID_LABELS
 
@@ -723,21 +839,51 @@ print_table "SPE10 MOD01-01 (SPE10-MOD01-01)" \
 echo "  Policy check:"; policy_check "$OUTDIR/spe10mod01_neural/SPE10-MOD01-01.DBG"
 policy_summary "$OUTDIR/spe10mod01_neural/SPE10-MOD01-01.DBG"
 
-read -r s10m2d_n s10m2d_l s10m2d_w < <(extract "$OUTDIR/spe10model2_flow_default/flow.log") || true
-read -r s10m2n_n s10m2n_l s10m2n_w < <(extract "$OUTDIR/spe10model2_neural/flow.log")       || true
-print_table "SPE10 model2 (SPE10_MODEL2)" \
-    "flow_default" "${s10m2d_n:--}" "${s10m2d_l:--}" "${s10m2d_w:--}" \
-    "neural-v3"    "${s10m2n_n:--}" "${s10m2n_l:--}" "${s10m2n_w:--}"
-echo "  Policy check:"; policy_check "$OUTDIR/spe10model2_neural/SPE10_MODEL2.DBG"
-policy_summary "$OUTDIR/spe10model2_neural/SPE10_MODEL2.DBG"
+# read -r s10m2d_n s10m2d_l s10m2d_w < <(extract "$OUTDIR/spe10model2_flow_default/flow.log") || true
+# read -r s10m2n_n s10m2n_l s10m2n_w < <(extract "$OUTDIR/spe10model2_neural/flow.log")       || true
+# print_table "SPE10 model2 (SPE10_MODEL2)" \
+#     "flow_default" "${s10m2d_n:--}" "${s10m2d_l:--}" "${s10m2d_w:--}" \
+#     "neural-v3"    "${s10m2n_n:--}" "${s10m2n_l:--}" "${s10m2n_w:--}"
+# echo "  Policy check:"; policy_check "$OUTDIR/spe10model2_neural/SPE10_MODEL2.DBG"
+# policy_summary "$OUTDIR/spe10model2_neural/SPE10_MODEL2.DBG"
 
-read -r slpd_n slpd_l slpd_w < <(extract "$OUTDIR/sleipner_flow_default/flow.log") || true
-read -r slpn_n slpn_l slpn_w < <(extract "$OUTDIR/sleipner_neural/flow.log")       || true
-print_table "Sleipner (SLEIPNER_ORG)" \
-    "flow_default" "${slpd_n:--}" "${slpd_l:--}" "${slpd_w:--}" \
-    "neural-v3"    "${slpn_n:--}" "${slpn_l:--}" "${slpn_w:--}"
-echo "  Policy check:"; policy_check "$OUTDIR/sleipner_neural/SLEIPNER_ORG.DBG"
-policy_summary "$OUTDIR/sleipner_neural/SLEIPNER_ORG.DBG"
+# read -r slpd_n slpd_l slpd_w < <(extract "$OUTDIR/sleipner_flow_default/flow.log") || true
+# read -r slpn_n slpn_l slpn_w < <(extract "$OUTDIR/sleipner_neural/flow.log")       || true
+# print_table "Sleipner (SLEIPNER_ORG)" \
+#     "flow_default" "${slpd_n:--}" "${slpd_l:--}" "${slpd_w:--}" \
+#     "neural-v3"    "${slpn_n:--}" "${slpn_l:--}" "${slpn_w:--}"
+# echo "  Policy check:"; policy_check "$OUTDIR/sleipner_neural/SLEIPNER_ORG.DBG"
+# policy_summary "$OUTDIR/sleipner_neural/SLEIPNER_ORG.DBG"
+
+read -r nmwd_n nmwd_l nmwd_w < <(extract "$OUTDIR/norne_msw_flow_default/flow.log") || true
+read -r nmwn_n nmwn_l nmwn_w < <(extract "$OUTDIR/norne_msw_neural/flow.log")       || true
+read -r nmwr_n nmwr_l nmwr_w < <(extract "$OUTDIR/norne_msw_neural_reuse/flow.log") || true
+print_table "Norne MSW 1A (NORNE_ATW2013_1A_MSW)" \
+    "flow_default" "${nmwd_n:--}" "${nmwd_l:--}" "${nmwd_w:--}" \
+    "neural-v3"    "${nmwn_n:--}" "${nmwn_l:--}" "${nmwn_w:--}" \
+    "neural-reuse" "${nmwr_n:--}" "${nmwr_l:--}" "${nmwr_w:--}"
+echo "  Policy check:"; policy_check "$OUTDIR/norne_msw_neural/NORNE_ATW2013_1A_MSW.DBG"
+policy_summary "$OUTDIR/norne_msw_neural/NORNE_ATW2013_1A_MSW.DBG"
+
+read -r dghd_n dghd_l dghd_w < <(extract "$OUTDIR/drogon_hist_flow_default/flow.log") || true
+read -r dghn_n dghn_l dghn_w < <(extract "$OUTDIR/drogon_hist_neural/flow.log")        || true
+read -r dghr_n dghr_l dghr_w < <(extract "$OUTDIR/drogon_hist_neural_reuse/flow.log")  || true
+print_table "Drogon HIST (DROGON_HIST)" \
+    "flow_default" "${dghd_n:--}" "${dghd_l:--}" "${dghd_w:--}" \
+    "neural-v3"    "${dghn_n:--}" "${dghn_l:--}" "${dghn_w:--}" \
+    "neural-reuse" "${dghr_n:--}" "${dghr_l:--}" "${dghr_w:--}"
+echo "  Policy check:"; policy_check "$OUTDIR/drogon_hist_neural/DROGON_HIST.DBG"
+policy_summary "$OUTDIR/drogon_hist_neural/DROGON_HIST.DBG"
+
+read -r dgpd_n dgpd_l dgpd_w < <(extract "$OUTDIR/drogon_pred_flow_default/flow.log") || true
+read -r dgpn_n dgpn_l dgpn_w < <(extract "$OUTDIR/drogon_pred_neural/flow.log")        || true
+read -r dgpr_n dgpr_l dgpr_w < <(extract "$OUTDIR/drogon_pred_neural_reuse/flow.log")  || true
+print_table "Drogon PRED (DROGON_PRED)" \
+    "flow_default" "${dgpd_n:--}" "${dgpd_l:--}" "${dgpd_w:--}" \
+    "neural-v3"    "${dgpn_n:--}" "${dgpn_l:--}" "${dgpn_w:--}" \
+    "neural-reuse" "${dgpr_n:--}" "${dgpr_l:--}" "${dgpr_w:--}"
+echo "  Policy check:"; policy_check "$OUTDIR/drogon_pred_neural/DROGON_PRED.DBG"
+policy_summary "$OUTDIR/drogon_pred_neural/DROGON_PRED.DBG"
 
 read -r spd_n spd_l spd_w < <(extract "$OUTDIR/spe11pyopm_flow_default/flow.log") || true
 read -r spb_n spb_l spb_w < <(extract "$OUTDIR/spe11pyopm_baseline/flow.log")     || true
@@ -757,6 +903,25 @@ echo "  Policy check:"; policy_check "$SPE11PYOPM_NEURAL_OUT/SPE11A.DBG"
 policy_summary "$SPE11PYOPM_NEURAL_OUT/SPE11A.DBG"
 echo "  Reuse policy check:"; policy_check "$SPE11PYOPM_NEURAL_REUSE_OUT/SPE11A.DBG"
 policy_summary "$SPE11PYOPM_NEURAL_REUSE_OUT/SPE11A.DBG"
+
+read -r spbd_n spbd_l spbd_w < <(extract "$OUTDIR/spe11b_flow_default/flow.log") || true
+read -r spbb_n spbb_l spbb_w < <(extract "$OUTDIR/spe11b_baseline/flow.log")     || true
+read -r spbn_n spbn_l spbn_w < <(extract "$SPE11B_NEURAL_OUT/flow.log")           || true
+read -r spbr_n spbr_l spbr_w < <(extract "$SPE11B_NEURAL_REUSE_OUT/flow.log")    || true
+print_table "SPE11B" \
+    "flow_default" "${spbd_n:--}" "${spbd_l:--}" "${spbd_w:--}" \
+    "baseline"     "${spbb_n:--}" "${spbb_l:--}" "${spbb_w:--}" \
+    "neural-v3"    "${spbn_n:--}" "${spbn_l:--}" "${spbn_w:--}" \
+    "neural-reuse" "${spbr_n:--}" "${spbr_l:--}" "${spbr_w:--}"
+echo "  Labels:"
+echo "    flow_default : $(label_desc none)"
+echo "    baseline     : $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); cpr-reuse-setup=0"
+echo "    neural       : base $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels 16-23 forbidden"
+echo "    neural-reuse : base $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels 16-23 forbidden; reuse-setup=${best_reuse_setup}; reuse-interval=${best_reuse_interval}"
+echo "  Policy check:"; policy_check "$SPE11B_NEURAL_OUT/SPE11B.DBG"
+policy_summary "$SPE11B_NEURAL_OUT/SPE11B.DBG"
+echo "  Reuse policy check:"; policy_check "$SPE11B_NEURAL_REUSE_OUT/SPE11B.DBG"
+policy_summary "$SPE11B_NEURAL_REUSE_OUT/SPE11B.DBG"
 
 if [[ $BENCH_HELDOUT -eq 1 ]]; then
     for heldout in $HELDOUT_CASES; do
