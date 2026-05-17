@@ -485,13 +485,17 @@ if [[ $SKIP_TRAIN -eq 0 ]]; then
     echo "========================================"
 
     # ── Phase 1: pre-train encoder on raw sweep rows (regression task) ──
-    echo "  Phase 1: pre-training encoder on raw sweep CSVs ..."
-    python3 "$SCRIPTS/pretrain_cpr_policy.py" \
-        --csvs "${EXISTING_SWEEP_CSVS[@]}" \
-        --out  "$ENCODER_PRETRAINED" \
-        --hidden 24 --depth 1 \
-        --epochs 30 --seed 42
-    echo ""
+    if [[ ${#EXISTING_SWEEP_CSVS[@]} -eq 0 ]]; then
+        echo "  Phase 1: no sweep CSVs found — skipping pre-training"
+    else
+        echo "  Phase 1: pre-training encoder on raw sweep CSVs (${#EXISTING_SWEEP_CSVS[@]} files) ..."
+        python3 "$SCRIPTS/pretrain_cpr_policy.py" \
+            --csvs "${EXISTING_SWEEP_CSVS[@]}" \
+            --out  "$ENCODER_PRETRAINED" \
+            --hidden 24 --depth 1 \
+            --epochs 30 --seed 42
+        echo ""
+    fi
 
     # ── Phase 2: architecture search with warm-started encoder ──
     best_hidden=32
@@ -500,6 +504,10 @@ if [[ $SKIP_TRAIN -eq 0 ]]; then
     best_arch_str="${n_features}→32→24"
     echo "  Input features detected: ${n_features}"
     echo "  Candidates: depth=1 h∈{8,12,16,24,32}  depth=2 h∈{16,24,32}"
+
+    # Pass --pretrained only if the encoder file was produced
+    pretrain_arg=()
+    [[ -f "$ENCODER_PRETRAINED" ]] && pretrain_arg=(--pretrained "$ENCODER_PRETRAINED")
 
     # depth=1: all widths; depth=2: only larger widths (small h with 2 layers overfits)
     arch_specs=("8 1" "12 1" "16 1" "24 1" "32 1" "16 2" "24 2" "32 2")
@@ -515,7 +523,7 @@ if [[ $SKIP_TRAIN -eq 0 ]]; then
                 --lr         0.001 \
                 --out        "$SCRIPT_DIR/tmp/cpr_arch_h${hidden}_d${depth}.model" \
                 --format     binary \
-                --pretrained "$ENCODER_PRETRAINED" \
+                "${pretrain_arg[@]}" \
                 --seed       42 2>&1 \
             | grep "^Final" | grep -oE 'val acc: [0-9.]+' | grep -oE '[0-9.]+' \
             > "$SCRIPT_DIR/tmp/cpr_arch_h${hidden}_d${depth}.acc"
