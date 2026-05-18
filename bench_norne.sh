@@ -27,6 +27,7 @@
 #   FRESH_SWEEP=0 ./bench_norne.sh                # skip sweep, reuse existing cpr_sweep_data/
 #   FRESH_SWEEP=0 SKIP_TRAIN=1 ./bench_norne.sh   # skip sweep+train, benchmark with existing model
 #   MODEL=/path/to/saved.model SKIP_TRAIN=1 FRESH_SWEEP=0 ./bench_norne.sh  # use a specific model
+#   SPE11PYOPM_SOLVER_LABEL=11 SKIP_TRAIN=1 FRESH_SWEEP=0 ./bench_norne.sh  # pin SPE11 base label
 #   TUNE_SPE11_REUSE=1 ./bench_norne.sh           # grid-search reuse-setup × reuse-interval for SPE11
 #   BENCH_HELDOUT=1 ./bench_norne.sh              # also test Sleipner/SPE10 held-out decks
 
@@ -78,9 +79,9 @@ SWEEP_SPE10MOD01=$SWEEP_DIR/sweep_spe10mod01_fresh
 #   sweep2/3    = 2 runs of SPE9+Norne
 #   sweep_spe11 = SPE11A sweep data
 SWEEP_CSVS=(
-    $SCRIPT_DIR/cpr_sweep_data/sweep2/*.csv
-    $SCRIPT_DIR/cpr_sweep_data/sweep3/*.csv
-    $SCRIPT_DIR/cpr_sweep_data/sweep_spe11/*.csv
+    $SCRIPT_DIR/cpr_sweep_data/sweep_run1_fresh/*.csv
+    $SCRIPT_DIR/cpr_sweep_data/sweep_run2_fresh/*.csv
+    $SCRIPT_DIR/cpr_sweep_data/sweep_spe11_fresh/*.csv
     # $SCRIPT_DIR/cpr_sweep_data/sweep5/*.csv
     # $SCRIPT_DIR/cpr_sweep_data/sweep7/*.csv
 )
@@ -338,11 +339,16 @@ heldout_case_info() {
 # ── Step 0 — regenerate sweeps ───────────────────────────────────────────────
 
 run_sweep() {
-    local tag=$1 out=$2; shift 2
+    # Usage: run_sweep <tag> <out_dir> [--nprocs=N] --decks <deck...>
+    # --nprocs=N overrides the global NPROCS for this sweep call only.
+    local tag=$1 out=$2 nprocs=$NPROCS; shift 2
+    if [[ $# -gt 0 && "$1" == --nprocs=* ]]; then
+        nprocs=${1#--nprocs=}; shift
+    fi
     echo "  ── $tag ──"
     python3 "$SCRIPTS/run_sweep.py" \
         --flow    "$FLOW" \
-        --nprocs  "$NPROCS" \
+        --nprocs  "$nprocs" \
         --out     "$out" \
         "$@"
 }
@@ -351,9 +357,10 @@ if [[ $FRESH_SWEEP -eq 1 ]]; then
     echo "========================================"
     echo "  Step 0 — regenerate sweep data"
     echo "  Norne + SPE9  : 2 independent runs  (→ sweep_run1_fresh, sweep_run2_fresh)"
-    echo "  SPE11A+B      : 1 run               (→ sweep_spe11_fresh)"
-    echo "  SPE10 model1  : 1 run               (→ sweep_spe10model1_fresh)"
-    echo "  SPE10 MOD01   : 1 run               (→ sweep_spe10mod01_fresh)"
+    echo "  SPE11A        : 1 run               (→ sweep_spe11_fresh, $NPROCS ranks)"
+    echo "  SPE11B        : 1 run               (→ sweep_spe11_fresh, ${SPE11B_NPROCS:-16} ranks — capped to avoid /dev/shm limit)"
+    echo "  SPE10 model1  : 1 run               (→ sweep_spe10model1_fresh, skipped if deck missing)"
+    echo "  SPE10 MOD01   : 1 run               (→ sweep_spe10mod01_fresh, skipped if deck missing)"
     # echo "  SPE10 model2  : 1 run               (→ sweep_spe10model2_fresh)"
     echo "  MPI ranks/job: $NPROCS"
     echo "========================================"
@@ -364,14 +371,27 @@ if [[ $FRESH_SWEEP -eq 1 ]]; then
     run_sweep "Norne + SPE9 (run 2)" "$SWEEP_RUN2" \
         --decks "$NORNE_DECK" "$SPE9_DECK"
 
-    run_sweep "SPE11A+B" "$SWEEP_SPE11" \
-        --decks "$SPE11PYOPM_DECK" "$SPE11B_DECK"
+    run_sweep "SPE11A" "$SWEEP_SPE11" \
+        --decks "$SPE11PYOPM_DECK"
 
-    run_sweep "SPE10 model1" "$SWEEP_SPE10MODEL1" \
-        --decks "$SPE10MODEL1_DECK"
+    _spe11b_sweep_nprocs=${SPE11B_NPROCS:-16}
+    (( _spe11b_sweep_nprocs > NPROCS )) && _spe11b_sweep_nprocs=$NPROCS
+    run_sweep "SPE11B" "$SWEEP_SPE11" "--nprocs=${_spe11b_sweep_nprocs}" \
+        --decks "$SPE11B_DECK"
 
-    run_sweep "SPE10 MOD01" "$SWEEP_SPE10MOD01" \
-        --decks "$SPE10MOD01_DECK"
+    if [[ -f "$SPE10MODEL1_DECK" ]]; then
+        run_sweep "SPE10 model1" "$SWEEP_SPE10MODEL1" \
+            --decks "$SPE10MODEL1_DECK"
+    else
+        echo "  SPE10 model1 : SKIPPED (deck not found: $SPE10MODEL1_DECK)"
+    fi
+
+    if [[ -f "$SPE10MOD01_DECK" ]]; then
+        run_sweep "SPE10 MOD01" "$SWEEP_SPE10MOD01" \
+            --decks "$SPE10MOD01_DECK"
+    else
+        echo "  SPE10 MOD01  : SKIPPED (deck not found: $SPE10MOD01_DECK)"
+    fi
 
     # run_sweep "SPE10 model2" "$SWEEP_SPE10MODEL2" \
     #     --decks "$SPE10MODEL2_DECK"
@@ -438,34 +458,38 @@ else
     fi
 fi
 
-# Auto-select best SPE11 baseline: most-winning label among safe labels (0-15)
-SPE11PYOPM_SOLVER_LABEL=$(python3 -c "
+# Auto-select best SPE11 baseline: most-winning label among safe labels (0-15).
+# Override with SPE11PYOPM_SOLVER_LABEL=XX to pin a specific label across machines.
+if [[ -z "${SPE11PYOPM_SOLVER_LABEL:-}" ]]; then
+    SPE11PYOPM_SOLVER_LABEL=$(python3 -c "
 import csv, collections, sys
 try:
     rows = [r for r in csv.DictReader(open('$TRAINING_CSV')) if 'spe11' in r.get('deck','').lower()]
     safe = [r['label'] for r in rows if int(r['label']) < 16]
     pool = safe if safe else [r['label'] for r in rows]
-    # Avoid using label 08 for SPE11A by skipping it when choosing the most common label.
+    # Avoid labels 08 and 10: both unstable as baseline with cpr-reuse-setup=0 at high rank counts.
+    avoid = {8, 10}
     if pool:
         cnt = collections.Counter(pool)
         best = None
         for lbl, _ in cnt.most_common():
             try:
-                if int(lbl) == 8:
+                if int(lbl) in avoid:
                     continue
             except Exception:
                 pass
             best = lbl
             break
         if best is None:
-            best = '9'
+            best = '11'
     else:
-        best = '9'
+        best = '11'
     print(f'{int(best):02d}')
 except Exception as e:
     sys.stderr.write(f'Warning: SPE11 label auto-select failed: {e}\n')
-    print('09')
-" 2>/dev/null || echo "09")
+    print('11')
+" 2>/dev/null || echo "11")
+fi
 SPE11PYOPM_SOLVER="$SPE11PYOPM_CONFIGS_DIR/label_${SPE11PYOPM_SOLVER_LABEL}.json"
 echo "  Auto-selected SPE11 baseline: label_${SPE11PYOPM_SOLVER_LABEL} ($(label_desc "$SPE11PYOPM_SOLVER_LABEL"))"
 
@@ -647,11 +671,23 @@ unset OPM_NEURAL_CPR_WEIGHTS
 
 echo ""
 echo "── SPE10 model1 ─────────────────────────"
+# SPE10model1 is a small 2-D deck; too many ranks cause solver failures.
+# Cap with SPE10MODEL1_NPROCS (default 8) to stay within stable range.
+_spe10m1_old_FLOW_CMD=("${FLOW_CMD[@]}")
+SPE10MODEL1_NPROCS=${SPE10MODEL1_NPROCS:-8}
+if (( SPE10MODEL1_NPROCS > NPROCS )); then SPE10MODEL1_NPROCS=$NPROCS; fi
+if (( SPE10MODEL1_NPROCS > 1 )); then
+    FLOW_CMD=(mpirun -np "$SPE10MODEL1_NPROCS" "$FLOW")
+else
+    FLOW_CMD=("$FLOW")
+fi
+echo "  MPI ranks: $SPE10MODEL1_NPROCS"
 unset OPM_NEURAL_CPR_WEIGHTS
 run_deck "flow_default" "$SPE10MODEL1_DECK" "$OUTDIR/spe10model1_flow_default"
 export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
 run_deck "neural-v3"    "$SPE10MODEL1_DECK" "$OUTDIR/spe10model1_neural"
 unset OPM_NEURAL_CPR_WEIGHTS
+FLOW_CMD=("${_spe10m1_old_FLOW_CMD[@]}")
 
 echo ""
 echo "── SPE10 MOD01-01 ───────────────────────"
@@ -693,22 +729,18 @@ echo "  flow_default: no solver flags (cprw + trueimpes + paroverilu0 + ilu0-AMG
 unset OPM_NEURAL_CPR_WEIGHTS
 run_deck "flow_default" "$SPE11PYOPM_DECK" "$OUTDIR/spe11pyopm_flow_default"
 
-echo "  baseline fixed solver: $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); cpr-reuse-setup=0"
-run_deck "baseline"     "$SPE11PYOPM_DECK" "$OUTDIR/spe11pyopm_baseline" \
-    --linear-solver="$SPE11PYOPM_SOLVER" \
-    --cpr-reuse-setup=0
+# echo "  baseline fixed solver: $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); cpr-reuse-setup=0"
+# run_deck "baseline"     "$SPE11PYOPM_DECK" "$OUTDIR/spe11pyopm_baseline" \
+#     --linear-solver="$SPE11PYOPM_SOLVER" \
+#     --cpr-reuse-setup=0
 
 SPE11PYOPM_NEURAL_OUT="$OUTDIR/spe11pyopm_neural"
 export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
 export OPM_NEURAL_CPR_FORBID_LABELS=8,16,17,18,19,20,21,22,23
 echo "  neural base solver: $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels 16-23 forbidden"
-echo "  Debug: OPM_NEURAL_CPR_WEIGHTS=$OPM_NEURAL_CPR_WEIGHTS"
-ls -l "$OPM_NEURAL_CPR_WEIGHTS" || true
 run_deck "neural-v3"    "$SPE11PYOPM_DECK" "$SPE11PYOPM_NEURAL_OUT" \
     --linear-solver="$SPE11PYOPM_SOLVER" \
     --cpr-reuse-setup=0
-echo "  Debug: grep NeuralCprPolicy in DBG (if present):"
-grep "NeuralCprPolicy" "$SPE11PYOPM_NEURAL_OUT"/SPE11A.DBG 2>/dev/null || true
 
 best_reuse_setup=4
 best_reuse_interval=10
@@ -746,7 +778,18 @@ fi
 
 echo ""
 echo "── SPE11B ──────────────────────────────"
+# SPE11B is the 3-D CO2 benchmark with much larger per-rank messages than SPE11A (2-D).
+# At high rank counts the shared-memory MPI transport exhausts /dev/shm (errno=EPERM).
+# SPE11B_NPROCS caps the rank count; override with e.g. SPE11B_NPROCS=32 ./bench_norne.sh.
+SPE11B_NPROCS=${SPE11B_NPROCS:-16}
+if (( SPE11B_NPROCS > SPE11_NPROCS )); then SPE11B_NPROCS=$SPE11_NPROCS; fi
+if (( SPE11B_NPROCS > 1 )); then
+    FLOW_CMD=(mpirun -np "$SPE11B_NPROCS" "$FLOW")
+else
+    FLOW_CMD=("$FLOW")
+fi
 echo "  flow_default: no solver flags (cprw + trueimpes + paroverilu0 + ilu0-AMG, reuse-setup=4)"
+echo "  MPI ranks: $SPE11B_NPROCS (SPE11A used $SPE11_NPROCS)"
 unset OPM_NEURAL_CPR_WEIGHTS
 run_deck "flow_default" "$SPE11B_DECK" "$OUTDIR/spe11b_flow_default"
 
