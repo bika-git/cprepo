@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bench_norne.sh — full pipeline: sweep → label → train → benchmark
+# bench_neural_cpr.sh — full pipeline: sweep → label → train → benchmark
 #
 # ── Pipeline overview ─────────────────────────────────────────────────────────
 #
@@ -8,28 +8,48 @@
 #     Norne + SPE9 (noise reduction via median), and once for SPE11A.
 #     Each deck×config pair writes one CSV of per-Newton-step features + timing.
 #     Tool: opm-simulators/doc/neural_cpr/run_sweep.py
+#     On opm-simulators neural-cpr-control the sweep runs at Flow's CPR
+#     settings, including setup reuse (4/30) and use_well_weights=false, so
+#     label 12 (label 8 on decks without wells) is Flow's default solver.
+#     Sweeps from older branches rebuilt the CPR setup on every solve.
 #
 #   Step 1 — label sweep data
-#     Groups rows by (deck, episode, newton_iter), picks the config with the
-#     lowest median total_ms as the label.
+#     Groups rows by (deck, episode, attempt, dt, newton_iter), i.e. by solves
+#     that several configs reached with the same timestep history, and picks
+#     the config with the lowest median total_ms as the label.
 #     Tool: opm-simulators/doc/neural_cpr/collect_sweep_labels.py
 #
 #   Step 2 — architecture search
 #     Trains hidden = 8, 12, 16, 24, 32 in parallel; keeps the best val_acc.
 #     Tool: opm-simulators/doc/neural_cpr/train_cpr_policy.py
+#     Steps 1–2 train the CPR variant classifier ("neural-v3").  Flow's default
+#     is the best or tied-best fixed variant on every deck tested so far, so
+#     this policy has little headroom.
 #
 #   Step 3 — benchmark
-#     flow_default / baseline / neural-v3 / neural-reuse for Norne, SPE9, SPE11A.
+#     flow_default / baseline / neural-v3 / neural-reuse for each deck, plus the
+#     neural policies of neural-cpr-control on Flow's default solver:
+#       neural-amg        neural AMG policy: prolongation damping and coarsening
+#                         target of the pressure AMG at each CPR setup rebuild
+#       neural-abort      neural abort policy: gives up on a timestep attempt
+#                         that is likely to be chopped anyway
+#       neural-amg+abort  both
+#     Their models are trained elsewhere (doc/neural_cpr/train_cpr_amg_policy.py,
+#     train_abort_policy.py); set AMG_MODEL / ABORT_MODEL, or NEW_POLICIES=0.
 #
 # Usage:
-#   ./bench_norne.sh                              # serial, fresh sweep
-#   NPROCS=8 OMPI_MCA_btl=self,sm ./bench_norne.sh   # MPI, fresh sweep
-#   FRESH_SWEEP=0 ./bench_norne.sh                # skip sweep, reuse existing cpr_sweep_data/
-#   FRESH_SWEEP=0 SKIP_TRAIN=1 ./bench_norne.sh   # skip sweep+train, benchmark with existing model
-#   MODEL=/path/to/saved.model SKIP_TRAIN=1 FRESH_SWEEP=0 ./bench_norne.sh  # use a specific model
-#   SPE11PYOPM_SOLVER_LABEL=11 SKIP_TRAIN=1 FRESH_SWEEP=0 ./bench_norne.sh  # pin SPE11 base label
-#   TUNE_SPE11_REUSE=1 ./bench_norne.sh           # grid-search reuse-setup × reuse-interval for SPE11
-#   BENCH_HELDOUT=1 ./bench_norne.sh              # also test Sleipner/SPE10 held-out decks
+#   ./bench_neural_cpr.sh                              # serial, fresh sweep
+#   NPROCS=32 FLOW_THREADS=2 MPI_ARGS="--bind-to none" ./bench_neural_cpr.sh
+#                                                 # MPI, 32 ranks x 2 threads (cno-0008)
+#   FRESH_SWEEP=0 ./bench_neural_cpr.sh                # skip sweep, reuse existing cpr_sweep_data/
+#   FRESH_SWEEP=0 SKIP_TRAIN=1 ./bench_neural_cpr.sh   # skip sweep+train, benchmark with existing model
+#   MODEL=/path/to/saved.model SKIP_TRAIN=1 FRESH_SWEEP=0 ./bench_neural_cpr.sh  # use a specific model
+#   SPE11PYOPM_SOLVER_LABEL=11 SKIP_TRAIN=1 FRESH_SWEEP=0 ./bench_neural_cpr.sh  # pin SPE11 base label
+#   TUNE_SPE11_REUSE=1 ./bench_neural_cpr.sh           # grid-search reuse-setup × reuse-interval for SPE11
+#   BENCH_HELDOUT=1 ./bench_neural_cpr.sh              # also test Sleipner/SPE10 held-out decks
+#   NEW_POLICIES=0 ./bench_neural_cpr.sh               # skip the neural AMG / abort arms
+#   NEW_POLICY_ARMS="neural-amg" ./bench_neural_cpr.sh # only some of them
+#   SPE11B_NPROCS=32 ...                          # SPE11B at 32 ranks (default 16)
 
 set -euo pipefail
 
@@ -58,11 +78,27 @@ HELDOUT_CASES=${HELDOUT_CASES:-"spe10model1"}
 
 # MPI setup — NPROCS controls ranks per flow call in both sweep and benchmark
 NPROCS=${NPROCS:-1}
-if (( NPROCS > 1 )); then
-    FLOW_CMD=(mpirun -np "$NPROCS" "$FLOW")
-else
-    FLOW_CMD=("$FLOW")
-fi
+# Extra mpirun flags for the benchmark runs, e.g. "--bind-to none" (the sweep
+# passes its own), and threads per rank (unset = Flow's default).
+MPI_ARGS=${MPI_ARGS:-}
+FLOW_THREADS=${FLOW_THREADS:-}
+[[ -n "$FLOW_THREADS" ]] && export OMP_NUM_THREADS="$FLOW_THREADS"
+
+# set_flow_cmd N: FLOW_CMD for a benchmark run on N ranks
+set_flow_cmd() {
+    local np=$1
+    FLOW_CMD=()
+    if (( np > 1 )); then
+        # Intentional shell splitting for user-provided MPI flags.
+        # shellcheck disable=SC2206
+        FLOW_CMD=(mpirun $MPI_ARGS -np "$np")
+    fi
+    FLOW_CMD+=("$FLOW")
+    if [[ -n "$FLOW_THREADS" ]]; then
+        FLOW_CMD+=(--threads-per-process="$FLOW_THREADS")
+    fi
+}
+set_flow_cmd "$NPROCS"
 
 # Sweep output directories (freshly generated this run)
 SWEEP_DIR=$SCRIPT_DIR/cpr_sweep_data
@@ -92,6 +128,39 @@ TRAINING_CSV=$SCRIPT_DIR/tmp/cpr_training_data.csv
 MODEL=${MODEL:-$SCRIPT_DIR/tmp/cpr_policy_retrained.model}
 ENCODER_PRETRAINED=$SCRIPT_DIR/tmp/cpr_encoder_pretrained.npz
 OUTDIR=$SCRIPT_DIR/tmp/bench_neural_cpr
+
+# Neural AMG and neural abort policies (Flow from opm-simulators neural-cpr-control),
+# run on Flow's default solver and CPR reuse.  Defaults: the models evaluated in
+# neural_cpr_snapshot_20261015 (both trained on SPE11A, Norne and SPE9).
+NEW_POLICIES=${NEW_POLICIES:-1}
+NEW_POLICY_ARMS=${NEW_POLICY_ARMS:-"neural-amg neural-abort neural-amg+abort"}
+AMG_MODEL=${AMG_MODEL:-$SCRIPT_DIR/tmp/amg_policy/cpr_amg_policy.model}
+ABORT_MODEL=${ABORT_MODEL:-$SCRIPT_DIR/tmp/abort_policy/abort_spe11a_norne_spe9.model}
+AMG_MIN_GAIN=${AMG_MIN_GAIN:-0.05}
+ABORT_THRESHOLD=${ABORT_THRESHOLD:-0.95}
+
+# CPR variant labels the neural-v3 policy may not pick on SPE11: 16-23
+# (trueimpesanalytic) need an oil phase, which SPE11 lacks.  Flow from
+# neural-cpr-control blocks them itself (deck guards); this keeps older builds
+# safe.  Do not forbid label 8: SPE11 has no wells, so the guards allow only
+# the cpr labels, and label 8 (cpr, trueimpes, paroverilu0, ilu0) is then
+# Flow's default solver.
+SPE11_FORBID_LABELS=${SPE11_FORBID_LABELS:-16,17,18,19,20,21,22,23}
+
+if (( NEW_POLICIES == 1 )); then
+    for arm in $NEW_POLICY_ARMS; do
+        case "$arm" in
+            neural-amg|neural-abort|neural-amg+abort) ;;
+            *) echo "ERROR: unknown arm in NEW_POLICY_ARMS: $arm" >&2; exit 1 ;;
+        esac
+        if [[ "$arm" == neural-amg* && ! -f "$AMG_MODEL" ]]; then
+            echo "ERROR: AMG_MODEL not found: $AMG_MODEL (or set NEW_POLICIES=0)" >&2; exit 1
+        fi
+        if [[ "$arm" == *abort && ! -f "$ABORT_MODEL" ]]; then
+            echo "ERROR: ABORT_MODEL not found: $ABORT_MODEL (or set NEW_POLICIES=0)" >&2; exit 1
+        fi
+    done
+fi
 
 # Decks
 NORNE_DECK=$SCRIPT_DIR/opm-tests/norne/NORNE_ATW2013.DATA
@@ -152,7 +221,7 @@ label_desc() {
             local wt; case $dec in 0) wt="quasiimpes";; 1) wt="trueimpes";; 2) wt="trueimpesanalytic";; *) wt="?";; esac
             local cpt; [[ $cprw -eq 1 ]] && cpt="cprw" || cpt="cpr"
             local ft;  [[ $fine  -eq 1 ]] && ft="dilu"  || ft="paroverilu0"
-            local ct;  [[ $coarse -eq 1 ]] && ct="dilu"  || ct="paroverilu0"
+            local ct;  [[ $coarse -eq 1 ]] && ct="dilu"  || ct="ilu0"
             echo "label_$(printf '%02d' $n) = ${wt} + ${cpt} + ${ft} + ${ct}"
             ;;
     esac
@@ -202,22 +271,25 @@ print_table() {
     # First row is the reference (Δ = —); subsequent rows show Δ vs first row.
     local deck_label=$1; shift
     local ref_w first=1
+    local b18 b10 b12
+    b18=$(printf '─%.0s' {1..18}); b10=$(printf '─%.0s' {1..10}); b12=$(printf '─%.0s' {1..12})
     echo ""
-    echo "┌─────────────────────────────────────────────────────────────┐"
-    printf "│  %-59s│\n" "$deck_label"
-    echo "├──────────────┬──────────┬──────────┬──────────┬────────────┤"
-    printf "│ %-12s │ %8s │ %8s │ %8s │ %10s │\n" "Run" "Newton" "Linear" "Wall (s)" "Δ wall"
-    echo "├──────────────┼──────────┼──────────┼──────────┼────────────┤"
+    echo "┌${b18}─${b10}─${b10}─${b10}─${b12}┐"
+    printf "│  %-62s│\n" "$deck_label"
+    echo "├${b18}┬${b10}┬${b10}┬${b10}┬${b12}┤"
+    # "Δ" and "—" take two and three bytes; printf pads by bytes.
+    printf "│ %-16s │ %8s │ %8s │ %8s │ %11s │\n" "Run" "Newton" "Linear" "Wall (s)" "Δ wall"
+    echo "├${b18}┼${b10}┼${b10}┼${b10}┼${b12}┤"
     while [[ $# -ge 4 ]]; do
         local tag=$1 rn=$2 rl=$3 rw=$4; shift 4
         if [[ $first -eq 1 ]]; then
             ref_w=$rw; first=0
-            printf "│ %-12s │ %8s │ %8s │ %8s │ %10s │\n" "$tag" "$rn" "$rl" "$rw" "—"
+            printf "│ %-16s │ %8s │ %8s │ %8s │ %12s │\n" "$tag" "$rn" "$rl" "$rw" "—"
         else
-            printf "│ %-12s │ %8s │ %8s │ %8s │ %10s │\n" "$tag" "$rn" "$rl" "$rw" "$(pct_delta "$ref_w" "$rw")"
+            printf "│ %-16s │ %8s │ %8s │ %8s │ %10s │\n" "$tag" "$rn" "$rl" "$rw" "$(pct_delta "$ref_w" "$rw")"
         fi
     done
-    echo "└──────────────┴──────────┴──────────┴──────────┴────────────┘"
+    echo "└${b18}┴${b10}┴${b10}┴${b10}┴${b12}┘"
 }
 
 policy_check() {
@@ -277,6 +349,73 @@ policy_summary() {
             }
         }
     ' "$dbg"
+}
+
+# ── neural AMG / abort arms ──────────────────────────────────────────────────
+
+arm_dir() { local a=${1//-/_}; echo "${a//+/_}"; }   # neural-amg+abort → neural_amg_abort
+
+run_new_policies() {
+    # Usage: run_new_policies <out prefix> <deck> [flow args...]
+    # Runs each arm of NEW_POLICY_ARMS with its own clean policy environment.
+    (( NEW_POLICIES == 1 )) || return 0
+    local prefix=$1 deck=$2 arm
+    shift 2
+    for arm in $NEW_POLICY_ARMS; do
+        (
+            unset OPM_NEURAL_CPR_WEIGHTS OPM_NEURAL_CPR_ACTIONS OPM_NEURAL_CPR_MIN_GAIN \
+                  OPM_NEURAL_CPR_CONFIDENCE OPM_NEURAL_CPR_FORBID_LABELS OPM_NEURAL_CPR_DISABLE \
+                  OPM_CPR_ABORT_MODEL OPM_CPR_ABORT_THRESHOLD OPM_CPR_SWEEP_LOG
+            if [[ "$arm" == neural-amg* ]]; then
+                export OPM_NEURAL_CPR_WEIGHTS="$AMG_MODEL" OPM_NEURAL_CPR_ACTIONS=amg
+                export OPM_NEURAL_CPR_MIN_GAIN="$AMG_MIN_GAIN"
+            else
+                export OPM_NEURAL_CPR_DISABLE=1
+            fi
+            if [[ "$arm" == *abort ]]; then
+                export OPM_CPR_ABORT_MODEL="$ABORT_MODEL" OPM_CPR_ABORT_THRESHOLD="$ABORT_THRESHOLD"
+            fi
+            run_deck "$arm" "$deck" "$OUTDIR/${prefix}_$(arm_dir "$arm")" "$@"
+        )
+    done
+}
+
+new_policy_rows() {
+    # Usage: mapfile -t rows < <(new_policy_rows <out prefix>)
+    # Prints print_table arguments (tag newton linear wall) for each arm.
+    (( NEW_POLICIES == 1 )) || return 0
+    local prefix=$1 arm n l w
+    for arm in $NEW_POLICY_ARMS; do
+        n=; l=; w=
+        read -r n l w < <(extract "$OUTDIR/${prefix}_$(arm_dir "$arm")/flow.log") || true
+        printf '%s\n' "$arm" "${n:--}" "${l:--}" "${w:--}"
+    done
+}
+
+new_policy_check() {
+    # Usage: new_policy_check <out prefix> <deck>
+    # What the networks did: AMG setups changed, timestep attempts given up.
+    (( NEW_POLICIES == 1 )) || return 0
+    local prefix=$1 stem arm dbg note
+    stem=$(basename "$2" .DATA)
+    echo "  Neural policy check:"
+    for arm in $NEW_POLICY_ARMS; do
+        dbg="$OUTDIR/${prefix}_$(arm_dir "$arm")/$stem.DBG"
+        if [[ ! -f "$dbg" ]]; then
+            printf "    %-17s DBG missing\n" "$arm"
+            continue
+        fi
+        note=
+        if [[ "$arm" == neural-amg* ]]; then
+            note=$(awk '/NeuralCprPolicy AMG decision/ {
+                            n++; if ($0 !~ /damping=1\.0+ coarsenTarget=1200 /) moved++ }
+                        END { printf "AMG changed at %d of %d setups", moved, n }' "$dbg")
+        fi
+        if [[ "$arm" == *abort ]]; then
+            note+="${note:+; }gave up $(grep -c "NeuralAbortPolicy: giving up" "$dbg" || true) timestep attempts"
+        fi
+        printf "    %-17s %s\n" "$arm" "$note"
+    done
 }
 
 heldout_case_info() {
@@ -598,7 +737,7 @@ echo "    Norne/SPE9/SPE10model1 flow_default : $(label_desc none)"
 echo "    Norne/SPE9/SPE10model1 neural       : $(label_desc ml)"
 echo "    SPE11 flow_default      : $(label_desc none)"
 echo "    SPE11 baseline          : $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); cpr-reuse-setup=0"
-echo "    SPE11 neural            : base $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels 16-23 forbidden"
+echo "    SPE11 neural            : base $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels $SPE11_FORBID_LABELS forbidden"
 if [[ $TUNE_SPE11_REUSE -eq 1 ]]; then
     echo "    SPE11 neural-reuse      : grid search setup={2,4,8} × interval={5,10,20} → best kept"
 else
@@ -607,6 +746,12 @@ fi
 if [[ $BENCH_HELDOUT -eq 1 ]]; then
     echo "    Held-out decks          : $HELDOUT_CASES"
 fi
+if (( NEW_POLICIES == 1 )); then
+    echo "    All decks, Flow's default solver and CPR reuse: $NEW_POLICY_ARMS"
+    echo "      neural AMG model      : $AMG_MODEL (min gain $AMG_MIN_GAIN)"
+    echo "      neural abort model    : $ABORT_MODEL (threshold $ABORT_THRESHOLD)"
+fi
+echo "  MPI: $NPROCS ranks${FLOW_THREADS:+ x $FLOW_THREADS threads}${MPI_ARGS:+ (mpirun $MPI_ARGS)}"
 echo "========================================"
 
 echo ""
@@ -616,6 +761,7 @@ run_deck "flow_default" "$NORNE_DECK" "$OUTDIR/norne_flow_default"
 export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
 run_deck "neural-v3"    "$NORNE_DECK" "$OUTDIR/norne_neural"
 unset OPM_NEURAL_CPR_WEIGHTS
+run_new_policies norne "$NORNE_DECK"
 
 echo ""
 echo "── Norne MSW (1A) ───────────────────────"
@@ -627,6 +773,7 @@ run_deck "neural-reuse" "$NORNE_MSW_DECK" "$OUTDIR/norne_msw_neural_reuse" \
     --cpr-reuse-setup=4 \
     --cpr-reuse-interval=10
 unset OPM_NEURAL_CPR_WEIGHTS
+run_new_policies norne_msw "$NORNE_MSW_DECK"
 
 echo ""
 echo "── Drogon HIST ─────────────────────────"
@@ -638,6 +785,7 @@ run_deck "neural-reuse" "$DROGON_HIST_DECK" "$OUTDIR/drogon_hist_neural_reuse" \
     --cpr-reuse-setup=4 \
     --cpr-reuse-interval=10
 unset OPM_NEURAL_CPR_WEIGHTS
+run_new_policies drogon_hist "$DROGON_HIST_DECK"
 
 echo ""
 echo "── Drogon PRED ─────────────────────────"
@@ -659,6 +807,7 @@ run_deck "neural-reuse" "$DROGON_PRED_DECK" "$OUTDIR/drogon_pred_neural_reuse" \
     --cpr-reuse-setup=4 \
     --cpr-reuse-interval=10
 unset OPM_NEURAL_CPR_WEIGHTS
+run_new_policies drogon_pred "$DROGON_PRED_DECK"
 rm -f "$DROGON_HIST_UNRST_LINK"
 
 echo ""
@@ -668,6 +817,7 @@ run_deck "flow_default" "$SPE9_DECK" "$OUTDIR/spe9_flow_default"
 export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
 run_deck "neural-v3"    "$SPE9_DECK" "$OUTDIR/spe9_neural"
 unset OPM_NEURAL_CPR_WEIGHTS
+run_new_policies spe9 "$SPE9_DECK"
 
 echo ""
 echo "── SPE10 model1 ─────────────────────────"
@@ -676,17 +826,14 @@ echo "── SPE10 model1 ──────────────────
 _spe10m1_old_FLOW_CMD=("${FLOW_CMD[@]}")
 SPE10MODEL1_NPROCS=${SPE10MODEL1_NPROCS:-8}
 if (( SPE10MODEL1_NPROCS > NPROCS )); then SPE10MODEL1_NPROCS=$NPROCS; fi
-if (( SPE10MODEL1_NPROCS > 1 )); then
-    FLOW_CMD=(mpirun -np "$SPE10MODEL1_NPROCS" "$FLOW")
-else
-    FLOW_CMD=("$FLOW")
-fi
+set_flow_cmd "$SPE10MODEL1_NPROCS"
 echo "  MPI ranks: $SPE10MODEL1_NPROCS"
 unset OPM_NEURAL_CPR_WEIGHTS
 run_deck "flow_default" "$SPE10MODEL1_DECK" "$OUTDIR/spe10model1_flow_default"
 export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
 run_deck "neural-v3"    "$SPE10MODEL1_DECK" "$OUTDIR/spe10model1_neural"
 unset OPM_NEURAL_CPR_WEIGHTS
+run_new_policies spe10model1 "$SPE10MODEL1_DECK"
 FLOW_CMD=("${_spe10m1_old_FLOW_CMD[@]}")
 
 echo ""
@@ -696,6 +843,7 @@ run_deck "flow_default" "$SPE10MOD01_DECK" "$OUTDIR/spe10mod01_flow_default"
 export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
 run_deck "neural-v3"    "$SPE10MOD01_DECK" "$OUTDIR/spe10mod01_neural"
 unset OPM_NEURAL_CPR_WEIGHTS
+run_new_policies spe10mod01 "$SPE10MOD01_DECK"
 
 # echo ""
 # echo "── SPE10 model2 ─────────────────────────"
@@ -720,11 +868,7 @@ echo "── SPE11A (spe11pyopm) ───────────────�
 old_FLOW_CMD=("${FLOW_CMD[@]}")
 SPE11_NPROCS=${SPE11_NPROCS:-$NPROCS}
 if (( SPE11_NPROCS > 48 )); then SPE11_NPROCS=48; fi
-if (( SPE11_NPROCS > 1 )); then
-    FLOW_CMD=(mpirun -np "$SPE11_NPROCS" "$FLOW")
-else
-    FLOW_CMD=("$FLOW")
-fi
+set_flow_cmd "$SPE11_NPROCS"
 echo "  flow_default: no solver flags (cprw + trueimpes + paroverilu0 + ilu0-AMG, reuse-setup=4)"
 unset OPM_NEURAL_CPR_WEIGHTS
 run_deck "flow_default" "$SPE11PYOPM_DECK" "$OUTDIR/spe11pyopm_flow_default"
@@ -736,8 +880,8 @@ run_deck "flow_default" "$SPE11PYOPM_DECK" "$OUTDIR/spe11pyopm_flow_default"
 
 SPE11PYOPM_NEURAL_OUT="$OUTDIR/spe11pyopm_neural"
 export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
-export OPM_NEURAL_CPR_FORBID_LABELS=8,16,17,18,19,20,21,22,23
-echo "  neural base solver: $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels 16-23 forbidden"
+export OPM_NEURAL_CPR_FORBID_LABELS="$SPE11_FORBID_LABELS"
+echo "  neural base solver: $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels $SPE11_FORBID_LABELS forbidden"
 run_deck "neural-v3"    "$SPE11PYOPM_DECK" "$SPE11PYOPM_NEURAL_OUT" \
     --linear-solver="$SPE11PYOPM_SOLVER" \
     --cpr-reuse-setup=0
@@ -775,19 +919,16 @@ else
         --cpr-reuse-setup="$best_reuse_setup" \
         --cpr-reuse-interval="$best_reuse_interval"
 fi
+run_new_policies spe11pyopm "$SPE11PYOPM_DECK"
 
 echo ""
 echo "── SPE11B ──────────────────────────────"
 # SPE11B is the 3-D CO2 benchmark with much larger per-rank messages than SPE11A (2-D).
 # At high rank counts the shared-memory MPI transport exhausts /dev/shm (errno=EPERM).
-# SPE11B_NPROCS caps the rank count; override with e.g. SPE11B_NPROCS=32 ./bench_norne.sh.
+# SPE11B_NPROCS caps the rank count; override with e.g. SPE11B_NPROCS=32 ./bench_neural_cpr.sh.
 SPE11B_NPROCS=${SPE11B_NPROCS:-16}
 if (( SPE11B_NPROCS > SPE11_NPROCS )); then SPE11B_NPROCS=$SPE11_NPROCS; fi
-if (( SPE11B_NPROCS > 1 )); then
-    FLOW_CMD=(mpirun -np "$SPE11B_NPROCS" "$FLOW")
-else
-    FLOW_CMD=("$FLOW")
-fi
+set_flow_cmd "$SPE11B_NPROCS"
 echo "  flow_default: no solver flags (cprw + trueimpes + paroverilu0 + ilu0-AMG, reuse-setup=4)"
 echo "  MPI ranks: $SPE11B_NPROCS (SPE11A used $SPE11_NPROCS)"
 unset OPM_NEURAL_CPR_WEIGHTS
@@ -803,22 +944,23 @@ export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
 # SPE11B neural-v3 crashes regardless of label when cpr-reuse-setup=0:
 # the AMG is rebuilt every Newton step and becomes unstable late in the
 # thermal CO2 simulation. Known limitation — neural-reuse works fine.
-export OPM_NEURAL_CPR_FORBID_LABELS=8,16,17,18,19,20,21,22,23
-echo "  neural base solver: $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels 8,16-23 forbidden"
+export OPM_NEURAL_CPR_FORBID_LABELS="$SPE11_FORBID_LABELS"
+echo "  neural base solver: $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels $SPE11_FORBID_LABELS forbidden"
 run_deck "neural-v3"    "$SPE11B_DECK" "$SPE11B_NEURAL_OUT" \
     --linear-solver="$SPE11PYOPM_SOLVER" \
     --cpr-reuse-setup=0
 
 SPE11B_NEURAL_REUSE_OUT="$OUTDIR/spe11b_neural_reuse"
-# Reuse: restore standard forbid list (label_11 works fine with AMG reuse)
-export OPM_NEURAL_CPR_FORBID_LABELS=8,16,17,18,19,20,21,22,23
-echo "  neural-reuse: standard guard (labels 8,16-23 forbidden); cpr-reuse-setup=${best_reuse_setup} cpr-reuse-interval=${best_reuse_interval}"
+# Reuse: same forbid list (label_11 works fine with AMG reuse)
+export OPM_NEURAL_CPR_FORBID_LABELS="$SPE11_FORBID_LABELS"
+echo "  neural-reuse: same guard (labels $SPE11_FORBID_LABELS forbidden); cpr-reuse-setup=${best_reuse_setup} cpr-reuse-interval=${best_reuse_interval}"
 run_deck "neural-reuse" "$SPE11B_DECK" "$SPE11B_NEURAL_REUSE_OUT" \
     --linear-solver="$SPE11PYOPM_SOLVER" \
     --cpr-reuse-setup="$best_reuse_setup" \
     --cpr-reuse-interval="$best_reuse_interval"
 unset OPM_NEURAL_CPR_WEIGHTS
 unset OPM_NEURAL_CPR_FORBID_LABELS
+run_new_policies spe11b "$SPE11B_DECK"
 
 # restore the previous FLOW_CMD (MPI ranks) for subsequent runs
 FLOW_CMD=("${old_FLOW_CMD[@]}")
@@ -841,6 +983,7 @@ if [[ $BENCH_HELDOUT -eq 1 ]]; then
             --cpr-reuse-setup=4 \
             --cpr-reuse-interval=10
         unset OPM_NEURAL_CPR_WEIGHTS
+        run_new_policies "$HELDOUT_STEM" "$HELDOUT_DECK"
     done
 fi
 
@@ -853,19 +996,25 @@ echo "========================================"
 
 read -r nd_n nd_l nd_w < <(extract "$OUTDIR/norne_flow_default/flow.log") || true
 read -r nn_n nn_l nn_w < <(extract "$OUTDIR/norne_neural/flow.log")        || true
+mapfile -t new_rows < <(new_policy_rows norne)
 print_table "Norne (NORNE_ATW2013)" \
     "flow_default" "${nd_n:--}" "${nd_l:--}" "${nd_w:--}" \
-    "neural-v3"    "${nn_n:--}" "${nn_l:--}" "${nn_w:--}"
+    "neural-v3"    "${nn_n:--}" "${nn_l:--}" "${nn_w:--}" \
+    "${new_rows[@]}"
 echo "  Policy check:"; policy_check "$OUTDIR/norne_neural/NORNE_ATW2013.DBG"
 policy_summary "$OUTDIR/norne_neural/NORNE_ATW2013.DBG"
+new_policy_check norne "$NORNE_DECK"
 
 read -r sd_n sd_l sd_w < <(extract "$OUTDIR/spe9_flow_default/flow.log") || true
 read -r sn_n sn_l sn_w < <(extract "$OUTDIR/spe9_neural/flow.log")       || true
+mapfile -t new_rows < <(new_policy_rows spe9)
 print_table "SPE9" \
     "flow_default" "${sd_n:--}" "${sd_l:--}" "${sd_w:--}" \
-    "neural-v3"    "${sn_n:--}" "${sn_l:--}" "${sn_w:--}"
+    "neural-v3"    "${sn_n:--}" "${sn_l:--}" "${sn_w:--}" \
+    "${new_rows[@]}"
 echo "  Policy check:"; policy_check "$OUTDIR/spe9_neural/SPE9.DBG"
 policy_summary "$OUTDIR/spe9_neural/SPE9.DBG"
+new_policy_check spe9 "$SPE9_DECK"
 
 if [[ $TUNE_SPE11_REUSE -eq 1 ]]; then
     echo ""
@@ -888,19 +1037,25 @@ fi
 
 read -r s10d_n s10d_l s10d_w < <(extract "$OUTDIR/spe10model1_flow_default/flow.log") || true
 read -r s10n_n s10n_l s10n_w < <(extract "$OUTDIR/spe10model1_neural/flow.log")       || true
+mapfile -t new_rows < <(new_policy_rows spe10model1)
 print_table "SPE10 model1 (SPE10_MODEL1)" \
     "flow_default" "${s10d_n:--}" "${s10d_l:--}" "${s10d_w:--}" \
-    "neural-v3"    "${s10n_n:--}" "${s10n_l:--}" "${s10n_w:--}"
+    "neural-v3"    "${s10n_n:--}" "${s10n_l:--}" "${s10n_w:--}" \
+    "${new_rows[@]}"
 echo "  Policy check:"; policy_check "$OUTDIR/spe10model1_neural/SPE10_MODEL1.DBG"
 policy_summary "$OUTDIR/spe10model1_neural/SPE10_MODEL1.DBG"
+new_policy_check spe10model1 "$SPE10MODEL1_DECK"
 
 read -r s10m01d_n s10m01d_l s10m01d_w < <(extract "$OUTDIR/spe10mod01_flow_default/flow.log") || true
 read -r s10m01n_n s10m01n_l s10m01n_w < <(extract "$OUTDIR/spe10mod01_neural/flow.log")       || true
+mapfile -t new_rows < <(new_policy_rows spe10mod01)
 print_table "SPE10 MOD01-01 (SPE10-MOD01-01)" \
     "flow_default" "${s10m01d_n:--}" "${s10m01d_l:--}" "${s10m01d_w:--}" \
-    "neural-v3"    "${s10m01n_n:--}" "${s10m01n_l:--}" "${s10m01n_w:--}"
+    "neural-v3"    "${s10m01n_n:--}" "${s10m01n_l:--}" "${s10m01n_w:--}" \
+    "${new_rows[@]}"
 echo "  Policy check:"; policy_check "$OUTDIR/spe10mod01_neural/SPE10-MOD01-01.DBG"
 policy_summary "$OUTDIR/spe10mod01_neural/SPE10-MOD01-01.DBG"
+new_policy_check spe10mod01 "$SPE10MOD01_DECK"
 
 # read -r s10m2d_n s10m2d_l s10m2d_w < <(extract "$OUTDIR/spe10model2_flow_default/flow.log") || true
 # read -r s10m2n_n s10m2n_l s10m2n_w < <(extract "$OUTDIR/spe10model2_neural/flow.log")       || true
@@ -921,70 +1076,85 @@ policy_summary "$OUTDIR/spe10mod01_neural/SPE10-MOD01-01.DBG"
 read -r nmwd_n nmwd_l nmwd_w < <(extract "$OUTDIR/norne_msw_flow_default/flow.log") || true
 read -r nmwn_n nmwn_l nmwn_w < <(extract "$OUTDIR/norne_msw_neural/flow.log")       || true
 read -r nmwr_n nmwr_l nmwr_w < <(extract "$OUTDIR/norne_msw_neural_reuse/flow.log") || true
+mapfile -t new_rows < <(new_policy_rows norne_msw)
 print_table "Norne MSW 1A (NORNE_ATW2013_1A_MSW)" \
     "flow_default" "${nmwd_n:--}" "${nmwd_l:--}" "${nmwd_w:--}" \
     "neural-v3"    "${nmwn_n:--}" "${nmwn_l:--}" "${nmwn_w:--}" \
-    "neural-reuse" "${nmwr_n:--}" "${nmwr_l:--}" "${nmwr_w:--}"
+    "neural-reuse" "${nmwr_n:--}" "${nmwr_l:--}" "${nmwr_w:--}" \
+    "${new_rows[@]}"
 echo "  Policy check:"; policy_check "$OUTDIR/norne_msw_neural/NORNE_ATW2013_1A_MSW.DBG"
 policy_summary "$OUTDIR/norne_msw_neural/NORNE_ATW2013_1A_MSW.DBG"
+new_policy_check norne_msw "$NORNE_MSW_DECK"
 
 read -r dghd_n dghd_l dghd_w < <(extract "$OUTDIR/drogon_hist_flow_default/flow.log") || true
 read -r dghn_n dghn_l dghn_w < <(extract "$OUTDIR/drogon_hist_neural/flow.log")        || true
 read -r dghr_n dghr_l dghr_w < <(extract "$OUTDIR/drogon_hist_neural_reuse/flow.log")  || true
+mapfile -t new_rows < <(new_policy_rows drogon_hist)
 print_table "Drogon HIST (DROGON_HIST)" \
     "flow_default" "${dghd_n:--}" "${dghd_l:--}" "${dghd_w:--}" \
     "neural-v3"    "${dghn_n:--}" "${dghn_l:--}" "${dghn_w:--}" \
-    "neural-reuse" "${dghr_n:--}" "${dghr_l:--}" "${dghr_w:--}"
+    "neural-reuse" "${dghr_n:--}" "${dghr_l:--}" "${dghr_w:--}" \
+    "${new_rows[@]}"
 echo "  Policy check:"; policy_check "$OUTDIR/drogon_hist_neural/DROGON_HIST.DBG"
 policy_summary "$OUTDIR/drogon_hist_neural/DROGON_HIST.DBG"
+new_policy_check drogon_hist "$DROGON_HIST_DECK"
 
 read -r dgpd_n dgpd_l dgpd_w < <(extract "$OUTDIR/drogon_pred_flow_default/flow.log") || true
 read -r dgpn_n dgpn_l dgpn_w < <(extract "$OUTDIR/drogon_pred_neural/flow.log")        || true
 read -r dgpr_n dgpr_l dgpr_w < <(extract "$OUTDIR/drogon_pred_neural_reuse/flow.log")  || true
+mapfile -t new_rows < <(new_policy_rows drogon_pred)
 print_table "Drogon PRED (DROGON_PRED)" \
     "flow_default" "${dgpd_n:--}" "${dgpd_l:--}" "${dgpd_w:--}" \
     "neural-v3"    "${dgpn_n:--}" "${dgpn_l:--}" "${dgpn_w:--}" \
-    "neural-reuse" "${dgpr_n:--}" "${dgpr_l:--}" "${dgpr_w:--}"
+    "neural-reuse" "${dgpr_n:--}" "${dgpr_l:--}" "${dgpr_w:--}" \
+    "${new_rows[@]}"
 echo "  Policy check:"; policy_check "$OUTDIR/drogon_pred_neural/DROGON_PRED.DBG"
 policy_summary "$OUTDIR/drogon_pred_neural/DROGON_PRED.DBG"
+new_policy_check drogon_pred "$DROGON_PRED_DECK"
 
 read -r spd_n spd_l spd_w < <(extract "$OUTDIR/spe11pyopm_flow_default/flow.log") || true
 read -r spb_n spb_l spb_w < <(extract "$OUTDIR/spe11pyopm_baseline/flow.log")     || true
 read -r spn_n spn_l spn_w < <(extract "$SPE11PYOPM_NEURAL_OUT/flow.log")           || true
 read -r spr_n spr_l spr_w < <(extract "$SPE11PYOPM_NEURAL_REUSE_OUT/flow.log")    || true
+mapfile -t new_rows < <(new_policy_rows spe11pyopm)
 print_table "SPE11A (spe11pyopm)" \
     "flow_default" "${spd_n:--}" "${spd_l:--}" "${spd_w:--}" \
     "baseline"     "${spb_n:--}" "${spb_l:--}" "${spb_w:--}" \
     "neural-v3"    "${spn_n:--}" "${spn_l:--}" "${spn_w:--}" \
-    "neural-reuse" "${spr_n:--}" "${spr_l:--}" "${spr_w:--}"
+    "neural-reuse" "${spr_n:--}" "${spr_l:--}" "${spr_w:--}" \
+    "${new_rows[@]}"
 echo "  Labels:"
 echo "    flow_default : $(label_desc none)"
 echo "    baseline     : $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); cpr-reuse-setup=0"
-echo "    neural       : base $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels 16-23 forbidden"
-echo "    neural-reuse : base $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels 16-23 forbidden; reuse-setup=${best_reuse_setup}; reuse-interval=${best_reuse_interval}"
+echo "    neural       : base $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels $SPE11_FORBID_LABELS forbidden"
+echo "    neural-reuse : base $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels $SPE11_FORBID_LABELS forbidden; reuse-setup=${best_reuse_setup}; reuse-interval=${best_reuse_interval}"
 echo "  Policy check:"; policy_check "$SPE11PYOPM_NEURAL_OUT/SPE11A.DBG"
 policy_summary "$SPE11PYOPM_NEURAL_OUT/SPE11A.DBG"
 echo "  Reuse policy check:"; policy_check "$SPE11PYOPM_NEURAL_REUSE_OUT/SPE11A.DBG"
 policy_summary "$SPE11PYOPM_NEURAL_REUSE_OUT/SPE11A.DBG"
+new_policy_check spe11pyopm "$SPE11PYOPM_DECK"
 
 read -r spbd_n spbd_l spbd_w < <(extract "$OUTDIR/spe11b_flow_default/flow.log") || true
 read -r spbb_n spbb_l spbb_w < <(extract "$OUTDIR/spe11b_baseline/flow.log")     || true
 read -r spbn_n spbn_l spbn_w < <(extract "$SPE11B_NEURAL_OUT/flow.log")           || true
 read -r spbr_n spbr_l spbr_w < <(extract "$SPE11B_NEURAL_REUSE_OUT/flow.log")    || true
+mapfile -t new_rows < <(new_policy_rows spe11b)
 print_table "SPE11B" \
     "flow_default" "${spbd_n:--}" "${spbd_l:--}" "${spbd_w:--}" \
     "baseline"     "${spbb_n:--}" "${spbb_l:--}" "${spbb_w:--}" \
     "neural-v3"    "${spbn_n:--}" "${spbn_l:--}" "${spbn_w:--}" \
-    "neural-reuse" "${spbr_n:--}" "${spbr_l:--}" "${spbr_w:--}"
+    "neural-reuse" "${spbr_n:--}" "${spbr_l:--}" "${spbr_w:--}" \
+    "${new_rows[@]}"
 echo "  Labels:"
 echo "    flow_default : $(label_desc none)"
 echo "    baseline     : $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); cpr-reuse-setup=0"
-echo "    neural       : base $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels 16-23 forbidden"
-echo "    neural-reuse : base $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels 16-23 forbidden; reuse-setup=${best_reuse_setup}; reuse-interval=${best_reuse_interval}"
+echo "    neural       : base $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels $SPE11_FORBID_LABELS forbidden"
+echo "    neural-reuse : base $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); labels $SPE11_FORBID_LABELS forbidden; reuse-setup=${best_reuse_setup}; reuse-interval=${best_reuse_interval}"
 echo "  Policy check:"; policy_check "$SPE11B_NEURAL_OUT/SPE11B.DBG"
 policy_summary "$SPE11B_NEURAL_OUT/SPE11B.DBG"
 echo "  Reuse policy check:"; policy_check "$SPE11B_NEURAL_REUSE_OUT/SPE11B.DBG"
 policy_summary "$SPE11B_NEURAL_REUSE_OUT/SPE11B.DBG"
+new_policy_check spe11b "$SPE11B_DECK"
 
 if [[ $BENCH_HELDOUT -eq 1 ]]; then
     for heldout in $HELDOUT_CASES; do
@@ -995,10 +1165,12 @@ if [[ $BENCH_HELDOUT -eq 1 ]]; then
         read -r hb_n hb_l hb_w < <(extract "$OUTDIR/${HELDOUT_STEM}_flow_default/flow.log")  || true
         read -r hn_n hn_l hn_w < <(extract "$OUTDIR/${HELDOUT_STEM}_neural/flow.log")        || true
         read -r hr_n hr_l hr_w < <(extract "$OUTDIR/${HELDOUT_STEM}_neural_reuse/flow.log")  || true
+        mapfile -t new_rows < <(new_policy_rows "$HELDOUT_STEM")
         print_table "$HELDOUT_TITLE — held-out generalization" \
             "flow_default" "${hb_n:--}" "${hb_l:--}" "${hb_w:--}" \
             "neural-v3"    "${hn_n:--}" "${hn_l:--}" "${hn_w:--}" \
-            "neural-reuse" "${hr_n:--}" "${hr_l:--}" "${hr_w:--}"
+            "neural-reuse" "${hr_n:--}" "${hr_l:--}" "${hr_w:--}" \
+            "${new_rows[@]}"
 
         dbg="$OUTDIR/${HELDOUT_STEM}_neural/$(basename "$HELDOUT_DECK" .DATA).DBG"
         echo "  Policy check:"; policy_check "$dbg"
@@ -1006,5 +1178,6 @@ if [[ $BENCH_HELDOUT -eq 1 ]]; then
         dbg="$OUTDIR/${HELDOUT_STEM}_neural_reuse/$(basename "$HELDOUT_DECK" .DATA).DBG"
         echo "  Reuse policy check:"; policy_check "$dbg"
         policy_summary "$dbg"
+        new_policy_check "$HELDOUT_STEM" "$HELDOUT_DECK"
     done
 fi

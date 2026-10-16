@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# compare_neural_cpr.sh - compare Flow default vs Neural CPR vs Neural CPR reuse.
+# compare_neural_cpr.sh - compare plain Flow with the Neural CPR policies.
 #
-# This is intended for apply-only testing on another machine:
-#   ./compare_neural_cpr.sh --flow /path/to/flow --model model.model --deck SPE11B.DATA --np 1 --spe11-safe
+# Runs plain Flow plus one arm per policy given (see --help).  Intended for
+# apply-only testing, also on another machine:
+#   ./compare_neural_cpr.sh --flow /path/to/flow --amg-model amg.model \
+#       --abort-model abort.model --deck SPE11A.DATA --np 32 --threads 2 \
+#       --mpi-args "--bind-to none"
 
 set -euo pipefail
 
@@ -10,47 +13,79 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 FLOW=${FLOW:-$SCRIPT_DIR/build/opm-simulators/bin/flow}
 MODEL=${MODEL:-}
+AMG_MODEL=${AMG_MODEL:-}
+ABORT_MODEL=${ABORT_MODEL:-}
 DECK=${DECK:-}
 OUTDIR=${OUTDIR:-}
 NPROCS=${NPROCS:-1}
 CONFIDENCE=${OPM_NEURAL_CPR_CONFIDENCE:-0.6}
 FORBID_LABELS=${OPM_NEURAL_CPR_FORBID_LABELS:-}
+MIN_GAIN=${OPM_NEURAL_CPR_MIN_GAIN:-}
+ABORT_THRESHOLD=${OPM_CPR_ABORT_THRESHOLD:-0.95}
+DEFAULT_REUSE_SETUP=${DEFAULT_CPR_REUSE_SETUP:-4}
+DEFAULT_REUSE_INTERVAL=${DEFAULT_CPR_REUSE_INTERVAL:-30}
 REUSE_SETUP=${CPR_REUSE_SETUP:-4}
 REUSE_INTERVAL=${CPR_REUSE_INTERVAL:-10}
+REUSE_ARM=1
 MPI_ARGS=${MPI_ARGS:-}
+THREADS=${THREADS:-}
 BACKGROUND=0
 FLOW_ARGS=()
 
 usage() {
     cat <<'EOF'
 Usage:
-  compare_neural_cpr.sh --model MODEL.model --deck CASE.DATA [options] [-- FLOW_OPTIONS...]
+  compare_neural_cpr.sh [--model M] [--amg-model M] [--abort-model M] --deck CASE.DATA [options] [-- FLOW_OPTIONS...]
+  compare_neural_cpr.sh MODEL.model CASE.DATA [options] [-- FLOW_OPTIONS...]
 
-Runs:
-  1. default       : no OPM_NEURAL_CPR_WEIGHTS
-  2. neural        : OPM_NEURAL_CPR_WEIGHTS set, no cpr-reuse flags
-  3. neural-reuse  : OPM_NEURAL_CPR_WEIGHTS set, cpr-reuse flags enabled
+Runs (plain Flow, plus one arm per policy given):
+  default           policy disabled, upstream solver and CPR reuse defaults
+  neural            --model: CPR variant policy, upstream CPR reuse defaults
+  neural-reuse      --model: CPR variant policy, explicit CPR reuse flags
+  neural-amg        --amg-model: neural AMG policy (prolongation damping and
+                    coarsening target of the pressure AMG)
+  neural-abort      --abort-model: neural abort policy on the default solver
+  neural-amg+abort  --amg-model and --abort-model together
 
 Options:
-  --model PATH          Trained Neural CPR .model file.
+  --model PATH          CPR variant policy model (24 configs).
+  --amg-model PATH      Neural AMG policy model.
+  --abort-model PATH    Neural abort policy model.
   --deck PATH           Flow deck to simulate.
   --flow PATH           Flow binary. Default: ./build/opm-simulators/bin/flow.
   --out DIR             Output root. Default: ./tmp/compare_neural_cpr/<deck>_<timestamp>.
   --np N                MPI ranks. Default: 1.
-  --confidence X        Neural confidence gate. Default: 0.6.
-  --forbid-labels LIST  Comma-separated labels to forbid.
-  --spe11-safe          Shortcut for --forbid-labels 8,16,17,18,19,20,21,22,23.
+                        On cno-0008: --np 32 --threads 2 --mpi-args "--bind-to none".
+  --threads N           Threads per rank (--threads-per-process=N, OMP_NUM_THREADS=N).
+                        Default: Flow's.
+  --min-gain G          Anchored decisions (cost and AMG models): leave the default
+                        only for a predicted log-cost gain above G. Default for
+                        neural-amg: 0.05.
+  --abort-threshold P   Abort above this probability of a chop. Default: 0.95.
+  --confidence X        Confidence gate for classifier models. Default: 0.6.
+  --forbid-labels LIST  Comma-separated CPR variant labels to forbid.
+  --spe11-safe          Shortcut for --forbid-labels 16,...,23 (trueimpesanalytic).
+                        Flow from neural-cpr-control applies this automatically on
+                        decks without oil.  Do not forbid label 8 there: on decks
+                        without wells the guards already block the cprw labels, so
+                        label 8 is Flow's default solver.
   --reuse-setup N       Neural-reuse setup. Default: 4.
   --reuse-interval N    Neural-reuse interval. Default: 10.
+  --no-reuse-arm        Skip the neural-reuse arm.
+  --default-reuse-setup N     Setup for the other arms. Default: 4 (Flow's).
+  --default-reuse-interval N  Interval for the other arms. Default: 30 (Flow's).
   --mpi-args "ARGS"     Extra arguments placed after mpirun, before -np.
-  --background          Launch all three runs and return immediately.
+  --background          Launch all runs at once and return immediately (runs
+                        then compete for cores, so timings are not comparable).
   -h, --help            Show this help.
 
 Environment overrides:
-  FLOW, MODEL, DECK, OUTDIR, NPROCS, OPM_NEURAL_CPR_CONFIDENCE,
-  OPM_NEURAL_CPR_FORBID_LABELS, CPR_REUSE_SETUP, CPR_REUSE_INTERVAL, MPI_ARGS.
+  FLOW, MODEL, AMG_MODEL, ABORT_MODEL, DECK, OUTDIR, NPROCS,
+  OPM_NEURAL_CPR_CONFIDENCE, OPM_NEURAL_CPR_FORBID_LABELS, OPM_NEURAL_CPR_MIN_GAIN,
+  OPM_CPR_ABORT_THRESHOLD, DEFAULT_CPR_REUSE_SETUP, DEFAULT_CPR_REUSE_INTERVAL,
+  CPR_REUSE_SETUP, CPR_REUSE_INTERVAL, MPI_ARGS, THREADS.
 
-Any arguments after "--" are passed directly to flow for all three runs.
+Any arguments after "--" are passed directly to flow for all runs.
 EOF
 }
 
@@ -64,6 +99,16 @@ while [[ $# -gt 0 ]]; do
         --model)
             [[ $# -ge 2 ]] || die "--model requires a path"
             MODEL=$2
+            shift 2
+            ;;
+        --amg-model)
+            [[ $# -ge 2 ]] || die "--amg-model requires a path"
+            AMG_MODEL=$2
+            shift 2
+            ;;
+        --abort-model)
+            [[ $# -ge 2 ]] || die "--abort-model requires a path"
+            ABORT_MODEL=$2
             shift 2
             ;;
         --deck)
@@ -86,6 +131,21 @@ while [[ $# -gt 0 ]]; do
             NPROCS=$2
             shift 2
             ;;
+        --threads)
+            [[ $# -ge 2 ]] || die "--threads requires an integer"
+            THREADS=$2
+            shift 2
+            ;;
+        --min-gain)
+            [[ $# -ge 2 ]] || die "--min-gain requires a number"
+            MIN_GAIN=$2
+            shift 2
+            ;;
+        --abort-threshold)
+            [[ $# -ge 2 ]] || die "--abort-threshold requires a number"
+            ABORT_THRESHOLD=$2
+            shift 2
+            ;;
         --confidence)
             [[ $# -ge 2 ]] || die "--confidence requires a number"
             CONFIDENCE=$2
@@ -97,7 +157,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --spe11-safe)
-            FORBID_LABELS=8,16,17,18,19,20,21,22,23
+            FORBID_LABELS=16,17,18,19,20,21,22,23
             shift
             ;;
         --reuse-setup)
@@ -108,6 +168,20 @@ while [[ $# -gt 0 ]]; do
         --reuse-interval)
             [[ $# -ge 2 ]] || die "--reuse-interval requires an integer"
             REUSE_INTERVAL=$2
+            shift 2
+            ;;
+        --no-reuse-arm)
+            REUSE_ARM=0
+            shift
+            ;;
+        --default-reuse-setup)
+            [[ $# -ge 2 ]] || die "--default-reuse-setup requires an integer"
+            DEFAULT_REUSE_SETUP=$2
+            shift 2
+            ;;
+        --default-reuse-interval)
+            [[ $# -ge 2 ]] || die "--default-reuse-interval requires an integer"
+            DEFAULT_REUSE_INTERVAL=$2
             shift 2
             ;;
         --mpi-args)
@@ -132,7 +206,7 @@ while [[ $# -gt 0 ]]; do
             die "unknown option: $1"
             ;;
         *)
-            if [[ -z "$MODEL" ]]; then
+            if [[ -z "$MODEL" && -z "$AMG_MODEL" && -z "$ABORT_MODEL" ]]; then
                 MODEL=$1
             elif [[ -z "$DECK" ]]; then
                 DECK=$1
@@ -144,17 +218,33 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ -n "$MODEL" ]] || die "missing model path; pass --model MODEL.model"
+[[ -n "$MODEL$AMG_MODEL$ABORT_MODEL" ]] \
+    || die "missing model; pass --model, --amg-model and/or --abort-model"
+for m in "$MODEL" "$AMG_MODEL" "$ABORT_MODEL"; do
+    [[ -z "$m" || -f "$m" ]] || die "model not found: $m"
+done
 [[ -n "$DECK" ]] || die "missing deck path; pass --deck CASE.DATA"
-[[ -f "$MODEL" ]] || die "model not found: $MODEL"
 [[ -f "$DECK" ]] || die "deck not found: $DECK"
 [[ -x "$FLOW" ]] || die "flow binary not executable: $FLOW"
 [[ "$NPROCS" =~ ^[0-9]+$ ]] || die "--np must be an integer"
 (( NPROCS >= 1 )) || die "--np must be >= 1"
+[[ -z "$THREADS" || "$THREADS" =~ ^[1-9][0-9]*$ ]] || die "--threads must be a positive integer"
 
-FLOW=$(cd "$(dirname "$FLOW")" && pwd)/$(basename "$FLOW")
-MODEL=$(cd "$(dirname "$MODEL")" && pwd)/$(basename "$MODEL")
-DECK=$(cd "$(dirname "$DECK")" && pwd)/$(basename "$DECK")
+abspath() { echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; }
+FLOW=$(abspath "$FLOW")
+DECK=$(abspath "$DECK")
+[[ -n "$MODEL" ]] && MODEL=$(abspath "$MODEL")
+[[ -n "$AMG_MODEL" ]] && AMG_MODEL=$(abspath "$AMG_MODEL")
+[[ -n "$ABORT_MODEL" ]] && ABORT_MODEL=$(abspath "$ABORT_MODEL")
+
+ARMS=(default)
+if [[ -n "$MODEL" ]]; then
+    ARMS+=(neural)
+    (( REUSE_ARM == 1 )) && ARMS+=(neural-reuse)
+fi
+[[ -n "$AMG_MODEL" ]] && ARMS+=(neural-amg)
+[[ -n "$ABORT_MODEL" ]] && ARMS+=(neural-abort)
+[[ -n "$AMG_MODEL" && -n "$ABORT_MODEL" ]] && ARMS+=(neural-amg+abort)
 
 if [[ -z "$OUTDIR" ]]; then
     deck_base=$(basename "$DECK")
@@ -188,21 +278,24 @@ summarize_one() {
     local name=$1 dir=$2 log=$2/flow.log
     local exit_code="?"
     [[ -f "$dir/exit_code" ]] && exit_code=$(cat "$dir/exit_code")
-    local sim newton linear errors
+    local sim linsolve newton linear aborts dbg
     sim=$(grep "Simulation time:" "$log" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)
+    linsolve=$(grep "Linear solve time:" "$log" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)
     newton=$(grep "Overall Newton Iterations" "$log" 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)
     linear=$(grep "Overall Linear Iterations" "$log" 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)
-    errors=$(grep -E '^Errors[[:space:]]+[0-9]+' "$log" 2>/dev/null | awk '{print $2}' | tail -1 || true)
-    printf "%-13s exit=%-3s wall=%-10s newton=%-8s linear=%-8s errors=%s\n" \
-        "$name" "$exit_code" "${sim:--}" "${newton:--}" "${linear:--}" "${errors:--}"
+    dbg=$(ls "$dir"/*.DBG 2>/dev/null | head -1 || true)
+    aborts=$( [[ -n "$dbg" ]] && grep -c "NeuralAbortPolicy: giving up" "$dbg" || true)
+    printf "%-17s exit=%-3s wall=%-9s linear-solve=%-9s newton=%-7s linear=%-8s aborts=%s\n" \
+        "$name" "$exit_code" "${sim:--}" "${linsolve:--}" "${newton:--}" "${linear:--}" "${aborts:--}"
 }
 
 summarize_all() {
     echo ""
     echo "Summary:"
-    summarize_one default "$OUTDIR/default"
-    summarize_one neural "$OUTDIR/neural"
-    summarize_one neural-reuse "$OUTDIR/neural-reuse"
+    local arm
+    for arm in "${ARMS[@]}"; do
+        summarize_one "$arm" "$OUTDIR/$arm"
+    done
 }
 
 run_case() {
@@ -217,22 +310,40 @@ run_case() {
     if [[ "$mode" == "neural-reuse" ]]; then
         args+=(--cpr-reuse-setup="$REUSE_SETUP")
         args+=(--cpr-reuse-interval="$REUSE_INTERVAL")
+    else
+        args+=(--cpr-reuse-setup="$DEFAULT_REUSE_SETUP")
+        args+=(--cpr-reuse-interval="$DEFAULT_REUSE_INTERVAL")
     fi
+    [[ -n "$THREADS" ]] && args+=(--threads-per-process="$THREADS")
     args+=("${FLOW_ARGS[@]}")
     args+=("$DECK")
 
     (
         cd "$SCRIPT_DIR"
-        if [[ "$mode" == "default" ]]; then
-            unset OPM_NEURAL_CPR_WEIGHTS
-        else
-            export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
-            export OPM_NEURAL_CPR_CONFIDENCE="$CONFIDENCE"
-        fi
-        if [[ -n "$FORBID_LABELS" ]]; then
-            export OPM_NEURAL_CPR_FORBID_LABELS="$FORBID_LABELS"
-        else
-            unset OPM_NEURAL_CPR_FORBID_LABELS
+        # Clean policy environment, then set what this arm needs.
+        unset OPM_NEURAL_CPR_WEIGHTS OPM_NEURAL_CPR_ACTIONS OPM_NEURAL_CPR_MIN_GAIN \
+              OPM_NEURAL_CPR_CONFIDENCE OPM_NEURAL_CPR_FORBID_LABELS OPM_NEURAL_CPR_DISABLE \
+              OPM_CPR_ABORT_MODEL OPM_CPR_ABORT_THRESHOLD OPM_CPR_SWEEP_LOG
+        [[ -n "$THREADS" ]] && export OMP_NUM_THREADS="$THREADS"
+        case "$mode" in
+            default|neural-abort)
+                export OPM_NEURAL_CPR_DISABLE=1
+                ;;
+            neural|neural-reuse)
+                export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
+                export OPM_NEURAL_CPR_CONFIDENCE="$CONFIDENCE"
+                [[ -n "$MIN_GAIN" ]] && export OPM_NEURAL_CPR_MIN_GAIN="$MIN_GAIN"
+                [[ -n "$FORBID_LABELS" ]] && export OPM_NEURAL_CPR_FORBID_LABELS="$FORBID_LABELS"
+                ;;
+            neural-amg|neural-amg+abort)
+                export OPM_NEURAL_CPR_WEIGHTS="$AMG_MODEL"
+                export OPM_NEURAL_CPR_ACTIONS=amg
+                export OPM_NEURAL_CPR_MIN_GAIN="${MIN_GAIN:-0.05}"
+                ;;
+        esac
+        if [[ "$mode" == "neural-abort" || "$mode" == "neural-amg+abort" ]]; then
+            export OPM_CPR_ABORT_MODEL="$ABORT_MODEL"
+            export OPM_CPR_ABORT_THRESHOLD="$ABORT_THRESHOLD"
         fi
 
         echo "[$name] started: $(date -Is)"
@@ -248,41 +359,44 @@ run_case() {
 }
 
 launch_case_bg() {
-    local name=$1 mode=$2
+    local name=$1
     local case_dir=$OUTDIR/$name
     mkdir -p "$case_dir"
-    ( run_case "$name" "$mode" ) &
+    ( run_case "$name" "$name" ) &
     echo "$!" >"$case_dir/launcher.pid"
     echo "  $name: $case_dir (pid $(cat "$case_dir/launcher.pid"))"
 }
 
 echo "Neural CPR comparison"
-echo "  flow       : $FLOW"
-echo "  model      : $MODEL"
-echo "  deck       : $DECK"
-echo "  out        : $OUTDIR"
-echo "  np         : $NPROCS"
-echo "  confidence : $CONFIDENCE"
-if [[ -n "$FORBID_LABELS" ]]; then
-    echo "  forbid     : $FORBID_LABELS"
-fi
-echo "  reuse      : setup=$REUSE_SETUP interval=$REUSE_INTERVAL"
+echo "  flow        : $FLOW"
+[[ -n "$MODEL" ]]       && echo "  model       : $MODEL (CPR variant policy)"
+[[ -n "$AMG_MODEL" ]]   && echo "  amg model   : $AMG_MODEL (min gain ${MIN_GAIN:-0.05})"
+[[ -n "$ABORT_MODEL" ]] && echo "  abort model : $ABORT_MODEL (threshold $ABORT_THRESHOLD)"
+echo "  deck        : $DECK"
+echo "  out         : $OUTDIR"
+echo "  np          : $NPROCS${THREADS:+ x $THREADS threads}"
+echo "  arms        : ${ARMS[*]}"
+[[ -n "$MODEL" && -z "$MIN_GAIN" ]] && echo "  confidence  : $CONFIDENCE"
+[[ -n "$FORBID_LABELS" ]] && echo "  forbid      : $FORBID_LABELS"
+echo "  default reuse : setup=$DEFAULT_REUSE_SETUP interval=$DEFAULT_REUSE_INTERVAL"
+[[ " ${ARMS[*]} " == *" neural-reuse "* ]] \
+    && echo "  neural-reuse  : setup=$REUSE_SETUP interval=$REUSE_INTERVAL"
 
 if (( BACKGROUND == 1 )); then
     echo ""
     echo "Launching in background:"
-    launch_case_bg default default
-    launch_case_bg neural neural
-    launch_case_bg neural-reuse neural-reuse
+    for arm in "${ARMS[@]}"; do
+        launch_case_bg "$arm"
+    done
     echo ""
     echo "Watch logs with:"
-    echo "  tail -f $OUTDIR/default/flow.log"
-    echo "  tail -f $OUTDIR/neural/flow.log"
-    echo "  tail -f $OUTDIR/neural-reuse/flow.log"
+    for arm in "${ARMS[@]}"; do
+        echo "  tail -f $OUTDIR/$arm/flow.log"
+    done
     exit 0
 fi
 
-run_case default default || true
-run_case neural neural || true
-run_case neural-reuse neural-reuse || true
+for arm in "${ARMS[@]}"; do
+    run_case "$arm" "$arm" || true
+done
 summarize_all

@@ -1,45 +1,61 @@
 #!/usr/bin/env bash
-# package_neural_cpr_model.sh - create a portable Neural CPR model bundle.
+# package_neural_cpr_model.sh - create a portable bundle of Neural CPR models.
+#
+# Bundles the neural AMG and/or neural abort policy (and optionally a CPR
+# variant policy) with the run and compare scripts, metadata and a README:
+#   ./package_neural_cpr_model.sh \
+#       --amg-model tmp/amg_policy/cpr_amg_policy.model \
+#       --abort-model tmp/abort_policy/abort_spe11a_norne_spe9.model
 
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 MODEL=${MODEL:-}
+AMG_MODEL=${AMG_MODEL:-}
+ABORT_MODEL=${ABORT_MODEL:-}
 NAME=${NAME:-}
 OUTDIR=${OUTDIR:-}
 CONFIDENCE=${OPM_NEURAL_CPR_CONFIDENCE:-0.6}
-FORBID_LABELS=${OPM_NEURAL_CPR_FORBID_LABELS:-8,16,17,18,19,20,21,22,23}
-REUSE_SETUP=${CPR_REUSE_SETUP:-4}
-REUSE_INTERVAL=${CPR_REUSE_INTERVAL:-10}
-SPE11_SOLVER_LABEL=${SPE11PYOPM_SOLVER_LABEL:-11}
-NPROCS_HINT=${NPROCS_HINT:-8}
-TRAINED_ON=${TRAINED_ON:-"Norne,SPE9,SPE10,SPE11A,SPE11B"}
+FORBID_LABELS=${OPM_NEURAL_CPR_FORBID_LABELS:-}
+MIN_GAIN=${OPM_NEURAL_CPR_MIN_GAIN:-0.05}
+ABORT_THRESHOLD=${OPM_CPR_ABORT_THRESHOLD:-0.95}
+NPROCS_HINT=${NPROCS_HINT:-32}
+THREADS_HINT=${THREADS_HINT:-2}
+TRAINED_ON=${TRAINED_ON:-"SPE11A,Norne,SPE9"}
 MAKE_TARBALL=1
 
 usage() {
     cat <<'EOF'
 Usage:
-  package_neural_cpr_model.sh --model MODEL.model [options]
+  package_neural_cpr_model.sh [--amg-model M] [--abort-model M] [--model M] [options]
+
+Models (at least one):
+  --amg-model PATH      Neural AMG policy.
+  --abort-model PATH    Neural abort policy.
+  --model PATH          CPR variant policy (24 configs).
 
 Options:
-  --model PATH          Trained Neural CPR .model file.
-  --name NAME           Bundle name. Default: model basename without .model.
+  --name NAME           Bundle name. Default: the model's basename (one model) or
+                        neural_cpr_<date> (several).
   --out DIR             Parent output directory. Default: ./dist.
-  --confidence X        Default confidence gate written to metadata. Default: 0.6.
-  --forbid-labels LIST  Default forbidden labels. Default: 8,16,17,18,19,20,21,22,23.
-  --reuse-setup N       Default CPR reuse setup. Default: 4.
-  --reuse-interval N    Default CPR reuse interval. Default: 10.
-  --spe11-label N       SPE11 baseline label hint. Default: 11.
-  --np-hint N           MPI rank hint for README examples. Default: 8.
-  --trained-on TEXT     Comma-separated training data note.
+  --min-gain G          Neural AMG margin for metadata and README. Default: 0.05.
+  --abort-threshold P   Neural abort threshold. Default: 0.95.
+  --confidence X        CPR variant policy confidence gate. Default: 0.6.
+  --forbid-labels LIST  CPR variant labels to forbid. Default: none (Flow from
+                        neural-cpr-control blocks trueimpesanalytic on decks without
+                        oil itself).
+  --np-hint N           MPI ranks for README examples. Default: 32.
+  --threads-hint N      Threads per rank for README examples. Default: 2.
+  --trained-on TEXT     Training decks note. Default: SPE11A,Norne,SPE9 (the decks
+                        of the current neural AMG and abort models).
   --no-tar              Create directory only; skip .tar.gz.
   -h, --help            Show this help.
 
 Environment overrides use the same names where practical:
-  MODEL, NAME, OUTDIR, OPM_NEURAL_CPR_CONFIDENCE, OPM_NEURAL_CPR_FORBID_LABELS,
-  CPR_REUSE_SETUP, CPR_REUSE_INTERVAL, SPE11PYOPM_SOLVER_LABEL, NPROCS_HINT,
-  TRAINED_ON.
+  MODEL, AMG_MODEL, ABORT_MODEL, NAME, OUTDIR, OPM_NEURAL_CPR_CONFIDENCE,
+  OPM_NEURAL_CPR_FORBID_LABELS, OPM_NEURAL_CPR_MIN_GAIN, OPM_CPR_ABORT_THRESHOLD,
+  NPROCS_HINT, THREADS_HINT, TRAINED_ON.
 EOF
 }
 
@@ -63,6 +79,16 @@ while [[ $# -gt 0 ]]; do
             MODEL=$2
             shift 2
             ;;
+        --amg-model)
+            [[ $# -ge 2 ]] || die "--amg-model requires a path"
+            AMG_MODEL=$2
+            shift 2
+            ;;
+        --abort-model)
+            [[ $# -ge 2 ]] || die "--abort-model requires a path"
+            ABORT_MODEL=$2
+            shift 2
+            ;;
         --name)
             [[ $# -ge 2 ]] || die "--name requires a value"
             NAME=$2
@@ -71,6 +97,16 @@ while [[ $# -gt 0 ]]; do
         --out)
             [[ $# -ge 2 ]] || die "--out requires a directory"
             OUTDIR=$2
+            shift 2
+            ;;
+        --min-gain)
+            [[ $# -ge 2 ]] || die "--min-gain requires a number"
+            MIN_GAIN=$2
+            shift 2
+            ;;
+        --abort-threshold)
+            [[ $# -ge 2 ]] || die "--abort-threshold requires a number"
+            ABORT_THRESHOLD=$2
             shift 2
             ;;
         --confidence)
@@ -83,24 +119,14 @@ while [[ $# -gt 0 ]]; do
             FORBID_LABELS=$2
             shift 2
             ;;
-        --reuse-setup)
-            [[ $# -ge 2 ]] || die "--reuse-setup requires an integer"
-            REUSE_SETUP=$2
-            shift 2
-            ;;
-        --reuse-interval)
-            [[ $# -ge 2 ]] || die "--reuse-interval requires an integer"
-            REUSE_INTERVAL=$2
-            shift 2
-            ;;
-        --spe11-label)
-            [[ $# -ge 2 ]] || die "--spe11-label requires a label"
-            SPE11_SOLVER_LABEL=$2
-            shift 2
-            ;;
         --np-hint)
             [[ $# -ge 2 ]] || die "--np-hint requires an integer"
             NPROCS_HINT=$2
+            shift 2
+            ;;
+        --threads-hint)
+            [[ $# -ge 2 ]] || die "--threads-hint requires an integer"
+            THREADS_HINT=$2
             shift 2
             ;;
         --trained-on)
@@ -130,82 +156,178 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ -n "$MODEL" ]] || die "missing model path; pass --model MODEL.model"
-[[ -f "$MODEL" ]] || die "model not found: $MODEL"
-[[ -f "$SCRIPT_DIR/run_neural_cpr.sh" ]] || die "missing $SCRIPT_DIR/run_neural_cpr.sh"
+[[ -n "$MODEL$AMG_MODEL$ABORT_MODEL" ]] \
+    || die "missing model; pass --amg-model, --abort-model and/or --model"
+models=()
+for m in "$AMG_MODEL" "$ABORT_MODEL" "$MODEL"; do
+    [[ -z "$m" ]] && continue
+    [[ -f "$m" ]] || die "model not found: $m"
+    models+=("$m")
+done
+for f in run_neural_cpr.sh compare_neural_cpr.sh; do
+    [[ -f "$SCRIPT_DIR/$f" ]] || die "missing $SCRIPT_DIR/$f"
+done
+[[ "$NPROCS_HINT" =~ ^[1-9][0-9]*$ ]] || die "--np-hint must be a positive integer"
+[[ "$THREADS_HINT" =~ ^[1-9][0-9]*$ ]] || die "--threads-hint must be a positive integer"
 
-model_abs=$(cd "$(dirname "$MODEL")" && pwd)/$(basename "$MODEL")
-model_base=$(basename "$MODEL")
+amg_base=; abort_base=; model_base=
+[[ -n "$AMG_MODEL" ]] && amg_base=$(basename "$AMG_MODEL")
+[[ -n "$ABORT_MODEL" ]] && abort_base=$(basename "$ABORT_MODEL")
+[[ -n "$MODEL" ]] && model_base=$(basename "$MODEL")
+if [[ -n "$amg_base" && ( "$amg_base" == "$abort_base" || "$amg_base" == "$model_base" ) ]] \
+   || [[ -n "$abort_base" && "$abort_base" == "$model_base" ]]; then
+    die "the models must have different file names"
+fi
+
 if [[ -z "$NAME" ]]; then
-    NAME=${model_base%.model}
+    if (( ${#models[@]} == 1 )); then
+        NAME=$(basename "${models[0]}" .model)
+    else
+        NAME=neural_cpr_$(date +%Y%m%d)
+    fi
 fi
 OUTDIR=${OUTDIR:-$SCRIPT_DIR/dist}
 BUNDLE_DIR=$OUTDIR/$NAME
 
 mkdir -p "$BUNDLE_DIR"
-cp "$model_abs" "$BUNDLE_DIR/$model_base"
-cp "$SCRIPT_DIR/run_neural_cpr.sh" "$BUNDLE_DIR/run_neural_cpr.sh"
-chmod +x "$BUNDLE_DIR/run_neural_cpr.sh"
+for m in "${models[@]}"; do
+    cp "$m" "$BUNDLE_DIR/$(basename "$m")"
+done
+for f in run_neural_cpr.sh compare_neural_cpr.sh; do
+    cp "$SCRIPT_DIR/$f" "$BUNDLE_DIR/$f"
+    chmod +x "$BUNDLE_DIR/$f"
+done
 
-model_sha=$(sha256sum "$model_abs" | awk '{print $1}')
-model_bytes=$(wc -c < "$model_abs")
-created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# ── metadata ─────────────────────────────────────────────────────────────────
+
+model_entry() {  # model_entry POLICY FILE [KEY=VALUE ...]: one entry of "models"
+    local policy=$1 file=$2 env="" kv sha bytes
+    shift 2
+    for kv in "$@"; do
+        env+="${env:+, }\"$(json_escape "${kv%%=*}")\": \"$(json_escape "${kv#*=}")\""
+    done
+    sha=$(sha256sum "$file" | awk '{print $1}')
+    bytes=$(wc -c < "$file" | tr -d ' ')
+    printf '    {"policy": "%s", "file": "%s", "sha256": "%s", "bytes": %s,\n     "env": {%s}}' \
+        "$policy" "$(json_escape "$(basename "$file")")" "$sha" "$bytes" "$env"
+}
+
+entries=()
+if [[ -n "$AMG_MODEL" ]]; then
+    entries+=("$(model_entry neural-amg "$AMG_MODEL" \
+        "OPM_NEURAL_CPR_WEIGHTS=$amg_base" OPM_NEURAL_CPR_ACTIONS=amg \
+        "OPM_NEURAL_CPR_MIN_GAIN=$MIN_GAIN")")
+fi
+if [[ -n "$ABORT_MODEL" ]]; then
+    entries+=("$(model_entry neural-abort "$ABORT_MODEL" \
+        "OPM_CPR_ABORT_MODEL=$abort_base" "OPM_CPR_ABORT_THRESHOLD=$ABORT_THRESHOLD")")
+fi
+if [[ -n "$MODEL" ]]; then
+    model_env=("OPM_NEURAL_CPR_WEIGHTS=$model_base" "OPM_NEURAL_CPR_CONFIDENCE=$CONFIDENCE")
+    [[ -n "$FORBID_LABELS" ]] && model_env+=("OPM_NEURAL_CPR_FORBID_LABELS=$FORBID_LABELS")
+    entries+=("$(model_entry cpr-variant "$MODEL" "${model_env[@]}")")
+fi
+nl=$'\n'
+models_json=""
+for e in "${entries[@]}"; do
+    models_json+="${models_json:+,$nl}$e"
+done
 
 cat >"$BUNDLE_DIR/neural_cpr_model.json" <<EOF
 {
-  "model": "$(json_escape "$model_base")",
-  "sha256": "$model_sha",
-  "bytes": $model_bytes,
-  "created_utc": "$created_utc",
-  "confidence": $CONFIDENCE,
-  "forbid_labels": "$(json_escape "$FORBID_LABELS")",
-  "reuse_setup": $REUSE_SETUP,
-  "reuse_interval": $REUSE_INTERVAL,
-  "spe11_solver_label": "$(json_escape "$SPE11_SOLVER_LABEL")",
+  "created_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "flow": "opm-simulators branch neural-cpr-control",
+  "trained_on": "$(json_escape "$TRAINED_ON")",
+  "cpr_reuse": "flow defaults",
   "nprocs_hint": $NPROCS_HINT,
-  "trained_on": "$(json_escape "$TRAINED_ON")"
+  "threads_hint": $THREADS_HINT,
+  "models": [
+$models_json
+  ]
 }
 EOF
 
+# ── README ───────────────────────────────────────────────────────────────────
+
+if (( NPROCS_HINT > 1 )); then
+    mpi_hint="--np $NPROCS_HINT --threads $THREADS_HINT --mpi-args \"--bind-to none\""
+    flow_hint="mpirun -np $NPROCS_HINT --bind-to none flow --threads-per-process=$THREADS_HINT"
+else
+    mpi_hint="--threads $THREADS_HINT"
+    flow_hint="flow --threads-per-process=$THREADS_HINT"
+fi
+
+model_rows=""; run_args=""; compare_args=""; env_lines=""
+if [[ -n "$AMG_MODEL" ]]; then
+    model_rows+="| Neural AMG | \`$amg_base\` | At each CPR setup rebuild: prolongation damping {1.0, 1.3, 1.6} and coarsening target {1200, 600, 300} of the pressure AMG. Keeps Flow's default (1.0, 1200) unless the predicted log-cost gain exceeds the margin ($MIN_GAIN). |$nl"
+    run_args+=" --amg-model $amg_base"
+    compare_args+=" --amg-model $amg_base"
+    env_lines+="OPM_NEURAL_CPR_WEIGHTS=\$PWD/$amg_base OPM_NEURAL_CPR_ACTIONS=amg OPM_NEURAL_CPR_MIN_GAIN=$MIN_GAIN \\$nl"
+fi
+if [[ -n "$MODEL" ]]; then
+    model_rows+="| CPR variant | \`$model_base\` | The CPR variant: pressure weights × cpr/cprw × fine and coarse smoother (24 configs). Cannot run together with the neural AMG policy. |$nl"
+    compare_args+=" --model $model_base"
+    if [[ -z "$AMG_MODEL" ]]; then
+        run_args+=" --model $model_base"
+        env_lines+="OPM_NEURAL_CPR_WEIGHTS=\$PWD/$model_base OPM_NEURAL_CPR_CONFIDENCE=$CONFIDENCE${FORBID_LABELS:+ OPM_NEURAL_CPR_FORBID_LABELS=$FORBID_LABELS} \\$nl"
+    fi
+fi
+if [[ -n "$ABORT_MODEL" ]]; then
+    model_rows+="| Neural abort | \`$abort_base\` | Before each CPR solve: the probability that the timestep attempt will be chopped anyway.  Above the threshold ($ABORT_THRESHOLD) the solve fails at once and Flow chops the timestep now. |$nl"
+    run_args+=" --abort-model $abort_base"
+    compare_args+=" --abort-model $abort_base"
+    [[ -z "$AMG_MODEL$MODEL" ]] && env_lines+="OPM_NEURAL_CPR_DISABLE=1 \\$nl"
+    env_lines+="OPM_CPR_ABORT_MODEL=\$PWD/$abort_base OPM_CPR_ABORT_THRESHOLD=$ABORT_THRESHOLD \\$nl"
+fi
+
 cat >"$BUNDLE_DIR/README.md" <<EOF
-# Neural CPR Model Bundle
+# Neural CPR policies for OPM Flow
 
-This bundle contains a trained Neural CPR model and a small apply-only runner.
-It does not include Flow or reservoir decks; use it from a machine with a Flow
-binary built with the Neural CPR policy support.
+Trained neural-network policies for the CPR linear solver of OPM Flow, with
+helper scripts to run and compare them.  Flow and the decks are not included.
+The models need a Flow built from opm-simulators branch \`neural-cpr-control\`;
+other builds ignore the environment variables below.
 
-## Files
+## Models
 
-- \`$model_base\`: trained policy weights.
-- \`neural_cpr_model.json\`: runtime defaults and checksum.
-- \`run_neural_cpr.sh\`: helper for running Flow with the model.
+| Policy | File | What the network decides at runtime |
+|---|---|---|
+${model_rows}
+Trained on: $TRAINED_ON.  \`neural_cpr_model.json\` has the checksums and
+the environment variables for each model.
 
-## Quick Start
+Rules around the networks (not learned): Flow's default solver as the anchor;
+no abort before an attempt's first solve or after three chops in a row; deck
+guards (cprw only on decks with wells, cpr only without wells, no
+trueimpesanalytic without oil).  CPR setup reuse stays at Flow's defaults.
 
-\`\`\`bash
-./run_neural_cpr.sh --model "$model_base" --deck /path/to/CASE.DATA --np $NPROCS_HINT
-\`\`\`
-
-If Flow is not at \`./build/opm-simulators/bin/flow\`, pass it explicitly:
-
-\`\`\`bash
-./run_neural_cpr.sh --flow /path/to/flow --model "$model_base" --deck /path/to/CASE.DATA --np $NPROCS_HINT
-\`\`\`
-
-For SPE11-style cases, use the safe label guard:
+## Run
 
 \`\`\`bash
-./run_neural_cpr.sh --model "$model_base" --deck /path/to/SPE11.DATA --np $NPROCS_HINT --spe11-safe
+./run_neural_cpr.sh${run_args} \\
+    --deck /path/to/CASE.DATA $mpi_hint
 \`\`\`
 
-The equivalent direct Flow invocation is:
+If Flow is not at \`./build/opm-simulators/bin/flow\`, add \`--flow /path/to/flow\`.
+
+## Compare with plain Flow
 
 \`\`\`bash
-OPM_NEURAL_CPR_WEIGHTS="$PWD/$model_base" \\
-OPM_NEURAL_CPR_CONFIDENCE=$CONFIDENCE \\
-OPM_NEURAL_CPR_FORBID_LABELS="$FORBID_LABELS" \\
-flow --cpr-reuse-setup=$REUSE_SETUP --cpr-reuse-interval=$REUSE_INTERVAL /path/to/CASE.DATA
+./compare_neural_cpr.sh${compare_args} \\
+    --deck /path/to/CASE.DATA $mpi_hint
 \`\`\`
+
+Runs plain Flow and one run per policy (and their combination) one after the
+other, then prints wall time, linear solve time, Newton and linear iterations,
+and how many timestep attempts the abort policy gave up.
+
+## Direct Flow invocation
+
+\`\`\`bash
+${env_lines}$flow_hint /path/to/CASE.DATA
+\`\`\`
+
+Plain Flow for reference: \`OPM_NEURAL_CPR_DISABLE=1\` and no \`OPM_CPR_ABORT_MODEL\`.
 EOF
 
 if (( MAKE_TARBALL == 1 )); then
