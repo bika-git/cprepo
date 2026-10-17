@@ -91,9 +91,11 @@ echo "========================================"
 clone_repo() {
     local dir=$CURRENT_DIRECTORY/$1 url=$2 ref=$3 commit=${4:-}
     if [[ ! -d "$dir" ]]; then
-        git clone --branch "$ref" "$url" "$dir"
-        [[ -n "$commit" ]] && git -C "$dir" reset --hard "$commit"
-        return
+        git -c advice.detachedHead=false clone --branch "$ref" "$url" "$dir"
+        if [[ -n "$commit" ]]; then
+            git -C "$dir" reset --hard "$commit"
+        fi
+        return 0
     fi
     local current
     current=$(git -C "$dir" describe --tags --exact-match 2>/dev/null \
