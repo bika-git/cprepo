@@ -3,26 +3,40 @@
 #
 # Prerequisites: cmake, make, MPI (OpenMPI or MPICH), Python 3, git
 #
-# Usage:
-#   cd /path/to/cprepo
+# Usage (fresh machine):
+#   git clone -b neural-cpr-control https://github.com/bikagit/cprepo.git
+#   cd cprepo
 #   bash setup_bench_env.sh
 #
+# Rerunning is safe: existing checkouts are left on their current branch (with
+# a warning if it is not the expected one) and builds are incremental.
+#
+# Environment overrides:
+#   NJOBS=N              parallel build jobs (default: nproc)
+#   CLEAN_BUILD=1        delete build/ and rebuild the OPM stack from scratch
+#   OPM_COMMON_COMMIT=, OPM_GRID_COMMIT=   follow release/2026.10 instead of
+#                        the pinned commits the results were built with
+#   ZOLTAN_INCLUDE_DIR, ZOLTAN_LIBRARY   Zoltan location (default: Ubuntu's
+#                        libtrilinos-zoltan-dev paths)
+#   LIBTORCH_PREFIX      optional, not needed by the neural CPR policies
+#
 # What this does:
-#   1. Clones the Dune modules (DUNE_VERSION, v2.11.0), the OPM repos (opm-common
-#      and opm-grid on OPM_RELEASE, release/2026.10; opm-simulators on
-#      neural-cpr-control, which is based on that release) and opm-tests
-#      (Norne, SPE9, SPE11A decks) — commented out below, the checkouts exist here
+#   1. Clones the Dune modules (DUNE_VERSION, v2.11.0), opm-common and opm-grid
+#      (upstream OPM, OPM_RELEASE = release/2026.10), opm-simulators (bikagit,
+#      neural-cpr-control, based on that release) and the decks (bikagit/decks:
+#      Norne, SPE9, SPE11A/B, SPE10, Drogon and the spe11_decks collection)
 #   2. Builds the Dune modules via dunecontrol
 #   3. Builds opm-common → opm-grid → opm-simulators (flow)
 #   4. Generates the 24 CPR solver config JSONs required by bench_neural_cpr.sh
 #
 # After completion:
 #   build/opm-simulators/bin/flow          — flow simulator
-#   opm-tests/{norne,spe9,spe11pyopm}/     — reservoir decks
+#   decks/{norne,spe9,spe11pyopm,...}/     — reservoir decks
 #   cpr_sweep_data/sweep_spe11/configs/    — label_00.json … label_23.json
 #
 # The neural AMG and neural abort models are not built here: they come from
-# training (opm-simulators/doc/neural_cpr/) or from the snapshot,
+# training (opm-simulators/doc/neural_cpr/) or from a package_neural_cpr_model.sh
+# bundle; the scripts expect
 #   tmp/amg_policy/cpr_amg_policy.model
 #   tmp/abort_policy/abort_spe11a_norne_spe9.model
 
@@ -32,13 +46,21 @@ CURRENT_DIRECTORY="$PWD"
 export CURRENT_DIRECTORY
 
 # ── configurable ──────────────────────────────────────────────────────────────
-NJOBS=50
+NJOBS=${NJOBS:-$(nproc)}
+CLEAN_BUILD=${CLEAN_BUILD:-0}
 # Not needed by the neural CPR policies (they use opm-common's ML::NNModel);
 # CMake skips the prefix if the path does not exist.
-LIBTORCH_PREFIX=/home/AD.NORCERESEARCH.NO/bika/bika/workstation/opmstation/soft/libtorch
+LIBTORCH_PREFIX=${LIBTORCH_PREFIX:-/home/AD.NORCERESEARCH.NO/bika/bika/workstation/opmstation/soft/libtorch}
 DUNE_VERSION=v2.11.0
 # opm-common and opm-grid branch; neural-cpr-control is based on this release.
 OPM_RELEASE=release/2026.10
+# Exact release commits the published results were built with (the release
+# branch keeps moving, e.g. rc1 changed NNLayer instantiation and Zoltan
+# partitioning).  Set OPM_COMMON_COMMIT= OPM_GRID_COMMIT= to follow the branch.
+OPM_COMMON_COMMIT=${OPM_COMMON_COMMIT-b90f7aebfe601af0cdb104a1285cd140a011ced5}
+OPM_GRID_COMMIT=${OPM_GRID_COMMIT-fa8b05067981f2ef824f5be45cc4975552f9d580}
+OPM_SIM_BRANCH=neural-cpr-control
+DECKS_BRANCH=main
 
 DUNE_PREFIX_PATH="\
 $CURRENT_DIRECTORY/dune-common/build-cmake;\
@@ -47,8 +69,8 @@ $CURRENT_DIRECTORY/dune-grid/build-cmake;\
 $CURRENT_DIRECTORY/dune-istl/build-cmake"
 
 # zoltan.h is in the source tree; Zoltan_config.h (generated) is in the build tree
-ZOLTAN_INCLUDE_DIR="/usr/include/trilinos"
-ZOLTAN_LIBRARY=/usr/lib/x86_64-linux-gnu/libtrilinos_zoltan.so
+ZOLTAN_INCLUDE_DIR=${ZOLTAN_INCLUDE_DIR:-/usr/include/trilinos}
+ZOLTAN_LIBRARY=${ZOLTAN_LIBRARY:-/usr/lib/x86_64-linux-gnu/libtrilinos_zoltan.so}
 
 OPM_PREFIX_PATH="\
 $DUNE_PREFIX_PATH;\
@@ -58,54 +80,54 @@ $CURRENT_DIRECTORY/build/opm-grid"
 
 # ── 1. Clone repos ────────────────────────────────────────────────────────────
 
-# echo "========================================"
-# echo "  Step 1 — clone repositories"
-# echo "========================================"
+echo "========================================"
+echo "  Step 1 — clone repositories"
+echo "========================================"
 
-# for module in common geometry grid istl; do
-#     if [[ ! -d "$CURRENT_DIRECTORY/dune-$module" ]]; then
-#         git clone --branch "$DUNE_VERSION" \
-#             https://gitlab.dune-project.org/core/dune-$module.git \
-#             "$CURRENT_DIRECTORY/dune-$module"
-#     else
-#         echo "  dune-$module already present, skipping clone"
-#     fi
-# done
+# clone_repo DIR URL REF [COMMIT]: clone REF (branch or tag) into DIR and, if
+# COMMIT is given, reset the branch to that commit.  An existing checkout is
+# left alone, so local work is never switched away or overwritten; it only
+# warns when the checkout is not on REF (or not at COMMIT).
+clone_repo() {
+    local dir=$CURRENT_DIRECTORY/$1 url=$2 ref=$3 commit=${4:-}
+    if [[ ! -d "$dir" ]]; then
+        git clone --branch "$ref" "$url" "$dir"
+        [[ -n "$commit" ]] && git -C "$dir" reset --hard "$commit"
+        return
+    fi
+    local current
+    current=$(git -C "$dir" describe --tags --exact-match 2>/dev/null \
+              || git -C "$dir" branch --show-current)
+    if [[ "$current" != "$ref" ]]; then
+        echo "  WARNING: $1 already present on '${current:-detached HEAD}', expected $ref;" \
+             "leaving it as is (run: git -C $dir checkout $ref)"
+    elif [[ -n "$commit" && "$(git -C "$dir" rev-parse HEAD)" != "$commit" ]]; then
+        echo "  WARNING: $1 on $ref but not at the pinned commit ${commit:0:9};" \
+             "leaving it as is"
+    else
+        echo "  $1 already present on $ref${commit:+ at ${commit:0:9}}"
+    fi
+}
 
-# # opm-common and opm-grid: upstream OPM release (no local patches needed)
-# for repo in common grid; do
-#     if [[ ! -d "$CURRENT_DIRECTORY/opm-$repo" ]]; then
-#         git clone --branch "$OPM_RELEASE" https://github.com/OPM/opm-$repo.git \
-#             "$CURRENT_DIRECTORY/opm-$repo"
-#     else
-#         echo "  opm-$repo already present — checking out $OPM_RELEASE"
-#         git -C "$CURRENT_DIRECTORY/opm-$repo" checkout "$OPM_RELEASE"
-#     fi
-# done
+for module in common geometry grid istl; do
+    clone_repo "dune-$module" "https://gitlab.dune-project.org/core/dune-$module.git" "$DUNE_VERSION"
+done
 
-# # opm-simulators: neural-cpr-control branch (NeuralCprPolicy, neural AMG and
-# # abort policies, deck guards, doc/neural_cpr scripts), branched from
-# # neural-cpr-v3.  Not on GitHub yet: clone it from the snapshot's git bundle.
-# OPM_SIM_SRC=https://github.com/bikagit/opm-simulators.git
-# OPM_SIM_BUNDLE=$CURRENT_DIRECTORY/neural_cpr_snapshot_20261015/code/opm-simulators_neural-cpr-control.bundle
-# [[ -f "$OPM_SIM_BUNDLE" ]] && OPM_SIM_SRC=$OPM_SIM_BUNDLE
-# if [[ ! -d "$CURRENT_DIRECTORY/opm-simulators" ]]; then
-#     git clone -b neural-cpr-control "$OPM_SIM_SRC" \
-#         "$CURRENT_DIRECTORY/opm-simulators"
-# else
-#     echo "  opm-simulators already present — checking out neural-cpr-control"
-#     git -C "$CURRENT_DIRECTORY/opm-simulators" checkout neural-cpr-control
-# fi
+# opm-common and opm-grid: upstream OPM release, no local patches needed.
+clone_repo opm-common "https://github.com/OPM/opm-common.git" "$OPM_RELEASE" "$OPM_COMMON_COMMIT"
+clone_repo opm-grid   "https://github.com/OPM/opm-grid.git"   "$OPM_RELEASE" "$OPM_GRID_COMMIT"
 
-# # opm-tests: tests-neural-cpr-v3 branch (Norne, SPE9, SPE11A decks)
-# if [[ ! -d "$CURRENT_DIRECTORY/opm-tests" ]]; then
-#     git clone -b tests-neural-cpr-v3 https://github.com/bikagit/opm-tests.git \
-#         "$CURRENT_DIRECTORY/opm-tests"
-# else
-#     echo "  opm-tests already present — checking out tests-neural-cpr-v3"
-#     git -C "$CURRENT_DIRECTORY/opm-tests" fetch origin
-#     git -C "$CURRENT_DIRECTORY/opm-tests" checkout tests-neural-cpr-v3
-# fi
+# opm-simulators: NeuralCprPolicy, neural AMG and abort policies, deck guards,
+# doc/neural_cpr training scripts.
+clone_repo opm-simulators "https://github.com/bikagit/opm-simulators.git" "$OPM_SIM_BRANCH"
+
+# decks: Norne, SPE9, SPE11A/B, SPE10, Drogon, spe11_decks (replaces opm-tests).
+clone_repo decks "https://github.com/bikagit/decks.git" "$DECKS_BRANCH"
+
+for f in "$ZOLTAN_INCLUDE_DIR/zoltan.h" "$ZOLTAN_LIBRARY"; do
+    [[ -e "$f" ]] || echo "  WARNING: $f not found; set ZOLTAN_INCLUDE_DIR/ZOLTAN_LIBRARY" \
+                          "(Ubuntu: apt install libtrilinos-zoltan-dev)"
+done
 
 # ── 2. Build Dune modules via dunecontrol ─────────────────────────────────────
 
@@ -126,10 +148,12 @@ echo "========================================"
 echo "  Step 3 — build OPM stack"
 echo "========================================"
 
-rm -rf build
-mkdir build
+if [[ "$CLEAN_BUILD" == 1 ]]; then
+    echo "  CLEAN_BUILD=1: removing build/"
+    rm -rf build
+fi
 
-mkdir build/opm-common
+mkdir -p build/opm-common
 cd "$CURRENT_DIRECTORY/build/opm-common"
 cmake -DUSE_MPI=1 \
       -DCMAKE_BUILD_TYPE=Release \
@@ -138,7 +162,7 @@ cmake -DUSE_MPI=1 \
 make -j"$NJOBS"
 cd "$CURRENT_DIRECTORY"
 
-mkdir build/opm-grid
+mkdir -p build/opm-grid
 cd "$CURRENT_DIRECTORY/build/opm-grid"
 cmake -DUSE_MPI=1 \
       -DCMAKE_BUILD_TYPE=Release \
@@ -149,7 +173,7 @@ cmake -DUSE_MPI=1 \
 make -j"$NJOBS"
 cd "$CURRENT_DIRECTORY"
 
-mkdir build/opm-simulators
+mkdir -p build/opm-simulators
 cd "$CURRENT_DIRECTORY/build/opm-simulators"
 cmake -DUSE_MPI=1 \
       -DCMAKE_BUILD_TYPE=Release \
@@ -201,7 +225,7 @@ echo ""
 echo "========================================"
 echo "  Setup complete"
 echo "  flow binary : $CURRENT_DIRECTORY/build/opm-simulators/bin/flow"
-echo "  test decks  : $CURRENT_DIRECTORY/opm-tests/{norne,spe9,spe11pyopm}/"
+echo "  decks       : $CURRENT_DIRECTORY/decks/"
 echo "  configs     : $CURRENT_DIRECTORY/cpr_sweep_data/sweep_spe11/configs/"
 echo ""
 echo "  Run the benchmark (32 ranks x 2 threads, as for the published results):"
@@ -210,5 +234,5 @@ echo ""
 echo "  Neural AMG + neural abort against plain flow on one deck:"
 echo "    ./compare_neural_cpr.sh --amg-model tmp/amg_policy/cpr_amg_policy.model \\"
 echo "        --abort-model tmp/abort_policy/abort_spe11a_norne_spe9.model \\"
-echo "        --deck opm-tests/spe9/SPE9.DATA --np 32 --threads 2 --mpi-args \"--bind-to none\""
+echo "        --deck decks/spe9/SPE9.DATA --np 32 --threads 2 --mpi-args \"--bind-to none\""
 echo "========================================"

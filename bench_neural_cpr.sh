@@ -162,19 +162,20 @@ if (( NEW_POLICIES == 1 )); then
     done
 fi
 
-# Decks
-NORNE_DECK=$SCRIPT_DIR/opm-tests/norne/NORNE_ATW2013.DATA
-SPE9_DECK=$SCRIPT_DIR/opm-tests/spe9/SPE9.DATA
-SPE11PYOPM_DECK=$SCRIPT_DIR/opm-tests/spe11pyopm/SPE11A.DATA
-SPE11B_DECK=$SCRIPT_DIR/opm-tests/spe11b/SPE11B.DATA
-SLEIPNER_DECK=$SCRIPT_DIR/opm-tests/sleipner/SLEIPNER_ORG.DATA
-SPE10MODEL1_DECK=$SCRIPT_DIR/opm-tests/spe10model1/SPE10_MODEL1.DATA
-SPE10MOD01_DECK=$SCRIPT_DIR/opm-tests/spe10/SPE10-MOD01-01.DATA
-SPE10MODEL2_DECK=$SCRIPT_DIR/opm-tests/spe10model2/SPE10_MODEL2.DATA
-SPE10MOD02_DECK=$SCRIPT_DIR/opm-tests/spe10/SPE10-MOD02-01.DATA
-NORNE_MSW_DECK=$SCRIPT_DIR/opm-tests/norne/NORNE_ATW2013_1A_MSW.DATA
-DROGON_HIST_DECK=$SCRIPT_DIR/opm-tests/drogon/model/DROGON_HIST.DATA
-DROGON_PRED_DECK=$SCRIPT_DIR/opm-tests/drogon/model/DROGON_PRED.DATA
+# Decks (bikagit/decks, cloned by setup_bench_env.sh; override with DECKS_DIR)
+DECKS_DIR=${DECKS_DIR:-$SCRIPT_DIR/decks}
+NORNE_DECK=$DECKS_DIR/norne/NORNE_ATW2013.DATA
+SPE9_DECK=$DECKS_DIR/spe9/SPE9.DATA
+SPE11PYOPM_DECK=$DECKS_DIR/spe11pyopm/SPE11A.DATA
+SPE11B_DECK=$DECKS_DIR/spe11b/SPE11B.DATA
+SLEIPNER_DECK=$DECKS_DIR/sleipner/SLEIPNER_ORG.DATA
+SPE10MODEL1_DECK=$DECKS_DIR/spe10model1/SPE10_MODEL1.DATA
+SPE10MOD01_DECK=$DECKS_DIR/spe10/SPE10-MOD01-01.DATA
+SPE10MODEL2_DECK=$DECKS_DIR/spe10model2/SPE10_MODEL2.DATA
+SPE10MOD02_DECK=$DECKS_DIR/spe10/SPE10-MOD02-01.DATA
+NORNE_MSW_DECK=$DECKS_DIR/norne/NORNE_ATW2013_1A_MSW.DATA
+DROGON_HIST_DECK=$DECKS_DIR/drogon/model/DROGON_HIST.DATA
+DROGON_PRED_DECK=$DECKS_DIR/drogon/model/DROGON_PRED.DATA
 
 # SPE11 solver configs: fresh sweep dir when regenerating, existing dir otherwise
 if [[ ${FRESH_SWEEP:-1} -eq 1 ]]; then
@@ -463,7 +464,7 @@ heldout_case_info() {
     fi
 
     # if [[ "$case_name" == "sleipner" ]]; then
-    #     local sleipner_grid=$SCRIPT_DIR/opm-tests/sleipner/Sleipner_Reference_Model_cleaned.grdecl
+    #     local sleipner_grid=$DECKS_DIR/sleipner/Sleipner_Reference_Model_cleaned.grdecl
     #     if [[ ! -f "$sleipner_grid" && -f "${sleipner_grid}.gz" ]]; then
     #         echo "  Preparing Sleipner include: $(basename "$sleipner_grid")"
     #         gzip -dk "${sleipner_grid}.gz"
