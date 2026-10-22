@@ -122,7 +122,7 @@ cuts the wasted share, but the earlier chops lead to more Newton and linear
 iterations in total. Combined with the neural AMG policy, it gives the best
 result on both decks.
 
-These are single runs at 8 ranks. Benchmark numbers on cno-0008 use 32 ranks ×
+These are single runs at 8 ranks. The benchmark numbers use 32 ranks ×
 2 threads with `--bind-to none`.
 
 ## Useful Options

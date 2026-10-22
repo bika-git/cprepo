@@ -54,7 +54,7 @@ Options:
   --flow PATH           Flow binary. Default: ./build/opm-simulators/bin/flow.
   --out DIR             Output directory. Default: ./tmp/neural_cpr_runs/<deck>_<timestamp>.
   --np N                MPI ranks. Default: 1.
-                        On cno-0008: --np 32 --threads 2 --mpi-args "--bind-to none".
+                        On a 64-core node: --np 32 --threads 2 --mpi-args "--bind-to none".
   --threads N           Threads per rank (--threads-per-process=N, OMP_NUM_THREADS=N).
                         Default: Flow's.
   --min-gain G          Anchored decisions: leave the default only for a predicted

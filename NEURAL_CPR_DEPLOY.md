@@ -38,8 +38,8 @@ The neural AMG and neural abort policies together:
   --np 32 --threads 2 --mpi-args "--bind-to none"
 ```
 
-`--np 32 --threads 2 --mpi-args "--bind-to none"` is the benchmark setup on
-cno-0008. Use what fits your machine.
+`--np 32 --threads 2 --mpi-args "--bind-to none"` is the benchmark setup used
+for the published numbers, on a 64-core node. Use what fits your machine.
 
 If the Flow binary is elsewhere, add `--flow /path/to/flow`.
 

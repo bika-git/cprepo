@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# bench_neural_cpr.sh — full pipeline: sweep → label → train → benchmark
+# bench_neural_cpr.sh — benchmark the neural CPR policies, and optionally
+# regenerate the data and model they are built from.
+#
+# By default only Step 3 runs: the benchmark reuses the sweep data already in
+# cpr_sweep_data/ and the model already at MODEL.  Steps 0–2 are the expensive
+# ones (hours of flow runs) and are opt-in — see FRESH_SWEEP and SKIP_TRAIN
+# under Usage below.
 #
 # ── Pipeline overview ─────────────────────────────────────────────────────────
 #
-#   Step 0 — regenerate sweep data
+#   Step 0 — regenerate sweep data            [SKIPPED by default; FRESH_SWEEP=1]
 #     Runs all 24 CPR configurations against each deck twice (run1, run2) for
 #     Norne + SPE9 (noise reduction via median), and once for SPE11A.
 #     Each deck×config pair writes one CSV of per-Newton-step features + timing.
@@ -13,20 +19,20 @@
 #     label 12 (label 8 on decks without wells) is Flow's default solver.
 #     Sweeps from older branches rebuilt the CPR setup on every solve.
 #
-#   Step 1 — label sweep data
+#   Step 1 — label sweep data                 [SKIPPED by default; SKIP_TRAIN=0]
 #     Groups rows by (deck, episode, attempt, dt, newton_iter), i.e. by solves
 #     that several configs reached with the same timestep history, and picks
 #     the config with the lowest median total_ms as the label.
 #     Tool: opm-simulators/doc/neural_cpr/collect_sweep_labels.py
 #
-#   Step 2 — architecture search
+#   Step 2 — architecture search              [SKIPPED by default; SKIP_TRAIN=0]
 #     Trains hidden = 8, 12, 16, 24, 32 in parallel; keeps the best val_acc.
 #     Tool: opm-simulators/doc/neural_cpr/train_cpr_policy.py
 #     Steps 1–2 train the CPR variant classifier ("neural-v3").  Flow's default
 #     is the best or tied-best fixed variant on every deck tested so far, so
 #     this policy has little headroom.
 #
-#   Step 3 — benchmark
+#   Step 3 — benchmark                        [the default: this is all that runs]
 #     flow_default / baseline / neural-v3 / neural-reuse for each deck, plus the
 #     neural policies of neural-cpr-control on Flow's default solver:
 #       neural-amg        neural AMG policy: prolongation damping and coarsening
@@ -37,19 +43,30 @@
 #     Their models are trained elsewhere (doc/neural_cpr/train_cpr_amg_policy.py,
 #     train_abort_policy.py); set AMG_MODEL / ABORT_MODEL, or NEW_POLICIES=0.
 #
-# Usage:
-#   ./bench_neural_cpr.sh                              # serial, fresh sweep
-#   NPROCS=32 FLOW_THREADS=2 MPI_ARGS="--bind-to none" ./bench_neural_cpr.sh
-#                                                 # MPI, 32 ranks x 2 threads (cno-0008)
-#   FRESH_SWEEP=0 ./bench_neural_cpr.sh                # skip sweep, reuse existing cpr_sweep_data/
-#   FRESH_SWEEP=0 SKIP_TRAIN=1 ./bench_neural_cpr.sh   # skip sweep+train, benchmark with existing model
-#   MODEL=/path/to/saved.model SKIP_TRAIN=1 FRESH_SWEEP=0 ./bench_neural_cpr.sh  # use a specific model
-#   SPE11PYOPM_SOLVER_LABEL=11 SKIP_TRAIN=1 FRESH_SWEEP=0 ./bench_neural_cpr.sh  # pin SPE11 base label
+# ── Usage ─────────────────────────────────────────────────────────────────────
+#
+#   ./bench_neural_cpr.sh                              # benchmark only, serial
+#   NPROCS=32 FLOW_THREADS=2 ./bench_neural_cpr.sh     # MPI, 32 ranks x 2 threads
+#
+#   Opt in to the expensive steps (all skipped by default):
+#   FRESH_SWEEP=1 ./bench_neural_cpr.sh                # also Step 0: regenerate cpr_sweep_data/
+#   SKIP_TRAIN=0 ./bench_neural_cpr.sh                 # also Steps 1-2: label + retrain MODEL
+#   FRESH_SWEEP=1 SKIP_TRAIN=0 ./bench_neural_cpr.sh   # the full pipeline, Steps 0-3
+#
+#   Inputs the default path reads (must already exist):
+#   MODEL=/path/to/saved.model ./bench_neural_cpr.sh   # the policy model to benchmark
+#                                                      # default: models/cpr_policy_retrained.model
+#                                                      # TRAINING_CSV is only read when SKIP_TRAIN=0
+#
+#   Other options:
+#   SPE11PYOPM_SOLVER_LABEL=11 ./bench_neural_cpr.sh   # pin SPE11 base label
 #   TUNE_SPE11_REUSE=1 ./bench_neural_cpr.sh           # grid-search reuse-setup × reuse-interval for SPE11
 #   BENCH_HELDOUT=1 ./bench_neural_cpr.sh              # also test Sleipner/SPE10 held-out decks
 #   NEW_POLICIES=0 ./bench_neural_cpr.sh               # skip the neural AMG / abort arms
 #   NEW_POLICY_ARMS="neural-amg" ./bench_neural_cpr.sh # only some of them
-#   SPE11B_NPROCS=32 ...                          # SPE11B at 32 ranks (default 16)
+#   SPE11B_NPROCS=32 ...                               # SPE11B at 32 ranks (default 16)
+#   MPI_ARGS="" ./bench_neural_cpr.sh                  # drop the default "--bind-to none"
+#                                                      # (only ever used when NPROCS > 1)
 
 set -euo pipefail
 
@@ -65,10 +82,12 @@ cd "$SCRIPT_DIR"
 FLOW=$SCRIPT_DIR/build/opm-simulators/bin/flow
 SCRIPTS=$SCRIPT_DIR/opm-simulators/doc/neural_cpr
 
-# Set FRESH_SWEEP=0 to skip Step 0 and reuse existing data in cpr_sweep_data/
-FRESH_SWEEP=${FRESH_SWEEP:-1}
-# Set SKIP_TRAIN=1 to skip Steps 1-2 (label+train) and benchmark with the existing MODEL file
-SKIP_TRAIN=${SKIP_TRAIN:-0}
+# Set FRESH_SWEEP=1 to regenerate the sweep data in Step 0 (hours of flow runs);
+# the default reuses the existing data in cpr_sweep_data/
+FRESH_SWEEP=${FRESH_SWEEP:-0}
+# Set SKIP_TRAIN=0 to run Steps 1-2 (label+train); the default benchmarks with
+# the existing MODEL file
+SKIP_TRAIN=${SKIP_TRAIN:-1}
 # Set TUNE_SPE11_REUSE=1 to grid-search cpr-reuse-setup x cpr-reuse-interval for SPE11 neural-reuse
 TUNE_SPE11_REUSE=${TUNE_SPE11_REUSE:-0}
 # Set BENCH_HELDOUT=1 to benchmark decks not used in training.
@@ -78,9 +97,12 @@ HELDOUT_CASES=${HELDOUT_CASES:-"spe10model1"}
 
 # MPI setup — NPROCS controls ranks per flow call in both sweep and benchmark
 NPROCS=${NPROCS:-1}
-# Extra mpirun flags for the benchmark runs, e.g. "--bind-to none" (the sweep
-# passes its own), and threads per rank (unset = Flow's default).
-MPI_ARGS=${MPI_ARGS:-}
+# Extra mpirun flags for the benchmark runs; the sweep passes its own.  Reached
+# only when NPROCS > 1, since set_flow_cmd prepends mpirun only then — a serial
+# run never sees these.  Unset gives "--bind-to none"; MPI_ARGS="" passes none.
+MPI_ARGS=${MPI_ARGS---bind-to none}
+# Threads per rank, passed as --threads-per-process in serial runs too.
+# Unset = Flow's own default.
 FLOW_THREADS=${FLOW_THREADS:-}
 [[ -n "$FLOW_THREADS" ]] && export OMP_NUM_THREADS="$FLOW_THREADS"
 
@@ -100,7 +122,9 @@ set_flow_cmd() {
 }
 set_flow_cmd "$NPROCS"
 
-# Sweep output directories (freshly generated this run)
+# Sweep output directories.  The *_fresh dirs are written by Step 0, so they are
+# only (re)generated when FRESH_SWEEP=1; by default they are read as they stand
+# from a previous run.
 SWEEP_DIR=$SCRIPT_DIR/cpr_sweep_data
 SWEEP_RUN1=$SWEEP_DIR/sweep_run1_fresh
 SWEEP_RUN2=$SWEEP_DIR/sweep_run2_fresh
@@ -177,17 +201,18 @@ NORNE_MSW_DECK=$DECKS_DIR/norne/NORNE_ATW2013_1A_MSW.DATA
 DROGON_HIST_DECK=$DECKS_DIR/drogon/model/DROGON_HIST.DATA
 DROGON_PRED_DECK=$DECKS_DIR/drogon/model/DROGON_PRED.DATA
 
-# SPE11 solver configs: fresh sweep dir when regenerating, existing dir otherwise
-if [[ ${FRESH_SWEEP:-1} -eq 1 ]]; then
+# SPE11 solver configs: the fresh sweep dir when Step 0 regenerates it,
+# otherwise (the default) the configs kept in cpr_sweep_data/sweep_spe11/
+if [[ $FRESH_SWEEP -eq 1 ]]; then
     SPE11PYOPM_CONFIGS_DIR=$SWEEP_SPE11/configs
 else
     SPE11PYOPM_CONFIGS_DIR=$SWEEP_DIR/sweep_spe11/configs
 fi
 SPE11PYOPM_AVOID_LABEL23=${SPE11PYOPM_AVOID_LABEL23:-1}
 
-# If the chosen configs dir is missing (e.g., user set FRESH_SWEEP=0 but
-# only the freshly generated sweep exists), fall back to the fresh sweep
-# configs to avoid failures when the non-fresh path is absent.
+# If the chosen configs dir is missing — the common case being the default
+# FRESH_SWEEP=0 on a tree where only a freshly generated sweep was ever written
+# — fall back to the fresh sweep configs instead of failing.
 if [[ ! -d "$SPE11PYOPM_CONFIGS_DIR" && -d "$SWEEP_SPE11/configs" ]]; then
     echo "Warning: SPE11 configs dir $SPE11PYOPM_CONFIGS_DIR missing; falling back to $SWEEP_SPE11/configs"
     SPE11PYOPM_CONFIGS_DIR=$SWEEP_SPE11/configs
@@ -540,7 +565,7 @@ if [[ $FRESH_SWEEP -eq 1 ]]; then
     #     --decks "$SLEIPNER_DECK"
 else
     echo "========================================"
-    echo "  Step 0 — SKIPPED (FRESH_SWEEP=0, using SWEEP_CSVS)"
+    echo "  Step 0 — SKIPPED (FRESH_SWEEP=0, the default; using SWEEP_CSVS)"
     for f in "${SWEEP_CSVS[@]}"; do echo "  $f"; done
     echo "========================================"
     missing=0
@@ -563,7 +588,7 @@ if [[ $SKIP_TRAIN -eq 0 ]]; then
     echo "========================================"
 
     # Build input CSV patterns depending on whether we just generated a fresh sweep
-    if [[ ${FRESH_SWEEP:-1} -eq 1 ]]; then
+    if [[ $FRESH_SWEEP -eq 1 ]]; then
         INPUT_PATTERNS=("$SWEEP_RUN1"/*.csv "$SWEEP_RUN2"/*.csv "$SWEEP_SPE11"/*.csv \
                         "$SWEEP_SPE10MODEL1"/*.csv "$SWEEP_SPE10MOD01"/*.csv)
         echo "  Input : sweep_run1/2_fresh + sweep_spe11_fresh + sweep_spe10model1/mod01_fresh"
@@ -590,10 +615,10 @@ if [[ $SKIP_TRAIN -eq 0 ]]; then
             --min-configs 2
     fi
 else
-    echo "  Step 1 — SKIPPED (SKIP_TRAIN=1, reusing $TRAINING_CSV)"
+    echo "  Step 1 — SKIPPED (SKIP_TRAIN=1, the default; reusing $TRAINING_CSV)"
     echo "========================================"
     if [[ ! -f "$TRAINING_CSV" ]]; then
-        echo "ERROR: $TRAINING_CSV missing — run once without SKIP_TRAIN=1 first" >&2
+        echo "ERROR: $TRAINING_CSV missing — run once with SKIP_TRAIN=0 first" >&2
         exit 1
     fi
 fi
@@ -714,10 +739,10 @@ if [[ $SKIP_TRAIN -eq 0 ]]; then
     echo "  Best arch : ${best_arch_str}  (val_acc=${best_val})"
     echo "  Model written to: $MODEL"
 else
-    echo "  Step 2 — SKIPPED (SKIP_TRAIN=1, using saved model)"
+    echo "  Step 2 — SKIPPED (SKIP_TRAIN=1, the default; using saved model)"
     echo "========================================"
     if [[ ! -f "$MODEL" ]]; then
-        echo "ERROR: $MODEL missing — run once without SKIP_TRAIN=1 first" >&2
+        echo "ERROR: $MODEL missing — run once with SKIP_TRAIN=0 first" >&2
         exit 1
     fi
     best_hidden="saved"
@@ -752,7 +777,13 @@ if (( NEW_POLICIES == 1 )); then
     echo "      neural AMG model      : $AMG_MODEL (min gain $AMG_MIN_GAIN)"
     echo "      neural abort model    : $ABORT_MODEL (threshold $ABORT_THRESHOLD)"
 fi
-echo "  MPI: $NPROCS ranks${FLOW_THREADS:+ x $FLOW_THREADS threads}${MPI_ARGS:+ (mpirun $MPI_ARGS)}"
+# MPI_ARGS only reaches mpirun when NPROCS > 1 (see set_flow_cmd), so don't
+# report it on a serial run where no mpirun is spawned.
+if (( NPROCS > 1 )); then
+    echo "  MPI: $NPROCS ranks${FLOW_THREADS:+ x $FLOW_THREADS threads}${MPI_ARGS:+ (mpirun $MPI_ARGS)}"
+else
+    echo "  MPI: serial (1 rank, no mpirun)${FLOW_THREADS:+, $FLOW_THREADS threads}"
+fi
 echo "========================================"
 
 echo ""
