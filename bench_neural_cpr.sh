@@ -124,9 +124,9 @@ SWEEP_CSVS=(
 
 
 # Intermediate and output files
-TRAINING_CSV=$SCRIPT_DIR/tmp/cpr_training_data.csv
-MODEL=${MODEL:-$SCRIPT_DIR/tmp/cpr_policy_retrained.model}
-ENCODER_PRETRAINED=$SCRIPT_DIR/tmp/cpr_encoder_pretrained.npz
+TRAINING_CSV=$SCRIPT_DIR/models/cpr_training_data.csv
+MODEL=${MODEL:-$SCRIPT_DIR/models/cpr_policy_retrained.model}
+ENCODER_PRETRAINED=$SCRIPT_DIR/models/cpr_encoder_pretrained.npz
 OUTDIR=$SCRIPT_DIR/tmp/bench_neural_cpr
 
 # Neural AMG and neural abort policies (Flow from opm-simulators neural-cpr-control),
@@ -134,8 +134,8 @@ OUTDIR=$SCRIPT_DIR/tmp/bench_neural_cpr
 # neural_cpr_snapshot_20261015 (both trained on SPE11A, Norne and SPE9).
 NEW_POLICIES=${NEW_POLICIES:-1}
 NEW_POLICY_ARMS=${NEW_POLICY_ARMS:-"neural-amg neural-abort neural-amg+abort"}
-AMG_MODEL=${AMG_MODEL:-$SCRIPT_DIR/tmp/amg_policy/cpr_amg_policy.model}
-ABORT_MODEL=${ABORT_MODEL:-$SCRIPT_DIR/tmp/abort_policy/abort_spe11a_norne_spe9.model}
+AMG_MODEL=${AMG_MODEL:-$SCRIPT_DIR/models/amg_policy/cpr_amg_policy.model}
+ABORT_MODEL=${ABORT_MODEL:-$SCRIPT_DIR/models/abort_policy/abort_spe11a_norne_spe9.model}
 AMG_MIN_GAIN=${AMG_MIN_GAIN:-0.05}
 ABORT_THRESHOLD=${ABORT_THRESHOLD:-0.95}
 

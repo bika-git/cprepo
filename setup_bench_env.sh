@@ -37,8 +37,8 @@
 # The neural AMG and neural abort models are not built here: they come from
 # training (opm-simulators/doc/neural_cpr/) or from a package_neural_cpr_model.sh
 # bundle; the scripts expect
-#   tmp/amg_policy/cpr_amg_policy.model
-#   tmp/abort_policy/abort_spe11a_norne_spe9.model
+#   models/amg_policy/cpr_amg_policy.model
+#   models/abort_policy/abort_spe11a_norne_spe9.model
 
 set -euo pipefail
 
@@ -234,7 +234,7 @@ echo "  Run the benchmark (32 ranks x 2 threads, as for the published results):"
 echo "    NPROCS=32 FLOW_THREADS=2 MPI_ARGS=\"--bind-to none\" ./bench_neural_cpr.sh"
 echo ""
 echo "  Neural AMG + neural abort against plain flow on one deck:"
-echo "    ./compare_neural_cpr.sh --amg-model tmp/amg_policy/cpr_amg_policy.model \\"
-echo "        --abort-model tmp/abort_policy/abort_spe11a_norne_spe9.model \\"
+echo "    ./compare_neural_cpr.sh --amg-model models/amg_policy/cpr_amg_policy.model \\"
+echo "        --abort-model models/abort_policy/abort_spe11a_norne_spe9.model \\"
 echo "        --deck decks/spe9/SPE9.DATA --np 32 --threads 2 --mpi-args \"--bind-to none\""
 echo "========================================"

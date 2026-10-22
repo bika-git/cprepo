@@ -38,8 +38,8 @@ From this repository:
 
 ```bash
 ./compare_neural_cpr.sh \
-  --amg-model tmp/amg_policy/cpr_amg_policy.model \
-  --abort-model tmp/abort_policy/abort_spe11a_norne_spe9.model \
+  --amg-model models/amg_policy/cpr_amg_policy.model \
+  --abort-model models/abort_policy/abort_spe11a_norne_spe9.model \
   --deck /path/to/SPE11A.DATA \
   --np 32 --threads 2 --mpi-args "--bind-to none"
 ```

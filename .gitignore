@@ -27,8 +27,9 @@ cpr_sweep_data/
 *.INIT
 *.GRID
 
-# Benchmark run directories (contain large simulation output)
-tmp/bench_*/
+# All ephemeral output (benchmarks, comparisons, sweeps).
+# Trained models live in models/, not here.
+tmp/
 
 # Editor / IDE
 .vscode/

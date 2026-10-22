@@ -4,8 +4,8 @@
 # Bundles the neural AMG and/or neural abort policy (and optionally a CPR
 # variant policy) with the run and compare scripts, metadata and a README:
 #   ./package_neural_cpr_model.sh \
-#       --amg-model tmp/amg_policy/cpr_amg_policy.model \
-#       --abort-model tmp/abort_policy/abort_spe11a_norne_spe9.model
+#       --amg-model models/amg_policy/cpr_amg_policy.model \
+#       --abort-model models/abort_policy/abort_spe11a_norne_spe9.model
 
 set -euo pipefail
 

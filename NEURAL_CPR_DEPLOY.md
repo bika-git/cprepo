@@ -18,8 +18,8 @@ All of this needs a `flow` binary built from the opm-simulators branch
 Current models:
 
 ```text
-tmp/amg_policy/cpr_amg_policy.model                 neural AMG,   trained on SPE11A, Norne, SPE9
-tmp/abort_policy/abort_spe11a_norne_spe9.model      neural abort, trained on SPE11A, Norne, SPE9
+models/amg_policy/cpr_amg_policy.model                 neural AMG,   trained on SPE11A, Norne, SPE9
+models/abort_policy/abort_spe11a_norne_spe9.model      neural abort, trained on SPE11A, Norne, SPE9
 ```
 
 `--model` and `--amg-model` both use `OPM_NEURAL_CPR_WEIGHTS`, so a single run
@@ -32,8 +32,8 @@ The neural AMG and neural abort policies together:
 
 ```bash
 ./run_neural_cpr.sh \
-  --amg-model tmp/amg_policy/cpr_amg_policy.model \
-  --abort-model tmp/abort_policy/abort_spe11a_norne_spe9.model \
+  --amg-model models/amg_policy/cpr_amg_policy.model \
+  --abort-model models/abort_policy/abort_spe11a_norne_spe9.model \
   --deck CASE.DATA \
   --np 32 --threads 2 --mpi-args "--bind-to none"
 ```
@@ -76,8 +76,8 @@ already block the cprw labels, so label 8 is Flow's default solver.
 
 ```bash
 ./package_neural_cpr_model.sh \
-  --amg-model tmp/amg_policy/cpr_amg_policy.model \
-  --abort-model tmp/abort_policy/abort_spe11a_norne_spe9.model \
+  --amg-model models/amg_policy/cpr_amg_policy.model \
+  --abort-model models/abort_policy/abort_spe11a_norne_spe9.model \
   --name neural-cpr-v2
 ```
 
@@ -109,8 +109,8 @@ With `--amg-model` and `--abort-model` that means four arms: `default`,
 
 ```bash
 ./compare_neural_cpr.sh \
-  --amg-model tmp/amg_policy/cpr_amg_policy.model \
-  --abort-model tmp/abort_policy/abort_spe11a_norne_spe9.model \
+  --amg-model models/amg_policy/cpr_amg_policy.model \
+  --abort-model models/abort_policy/abort_spe11a_norne_spe9.model \
   --deck /path/to/SPE11A.DATA \
   --np 32 --threads 2 --mpi-args "--bind-to none"
 ```

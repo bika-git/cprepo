@@ -89,8 +89,8 @@ Example: `NJOBS=16 bash setup_bench_env.sh`.
 |---|---|
 | `build/opm-simulators/bin/flow` | Flow, with the neural CPR policies |
 | `decks/` | The decks: Norne, SPE9, SPE10, SPE11A/B/C, Drogon, Smeaheia (see `decks/README.md`) |
-| `tmp/amg_policy/cpr_amg_policy.model` | Neural AMG policy: chooses the pressure-AMG settings at each CPR setup |
-| `tmp/abort_policy/abort_spe11a_norne_spe9.model` | Neural abort policy: gives up early on timestep attempts that will fail anyway |
+| `models/amg_policy/cpr_amg_policy.model` | Neural AMG policy: chooses the pressure-AMG settings at each CPR setup |
+| `models/abort_policy/abort_spe11a_norne_spe9.model` | Neural abort policy: gives up early on timestep attempts that will fail anyway |
 
 Both models were trained on SPE11A, Norne and SPE9.
 
@@ -101,8 +101,8 @@ run takes seconds):
 
 ```bash
 ./compare_neural_cpr.sh \
-  --amg-model tmp/amg_policy/cpr_amg_policy.model \
-  --abort-model tmp/abort_policy/abort_spe11a_norne_spe9.model \
+  --amg-model models/amg_policy/cpr_amg_policy.model \
+  --abort-model models/abort_policy/abort_spe11a_norne_spe9.model \
   --deck decks/spe9/SPE9.DATA --np 8
 ```
 
