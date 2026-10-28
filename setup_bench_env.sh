@@ -4,7 +4,7 @@
 # Prerequisites: cmake, make, MPI (OpenMPI or MPICH), Python 3, git
 #
 # Usage (fresh machine):
-#   git clone -b neural-cpr-control https://github.com/bikagit/cprepo.git
+#   git clone -b neural-cpr-control https://github.com/bika-git/cprepo.git
 #   cd cprepo
 #   bash setup_bench_env.sh
 #
@@ -22,8 +22,8 @@
 #
 # What this does:
 #   1. Clones the Dune modules (DUNE_VERSION, v2.11.0), opm-common and opm-grid
-#      (upstream OPM, OPM_RELEASE = release/2026.10), opm-simulators (bikagit,
-#      neural-cpr-control, based on that release) and the decks (bikagit/decks:
+#      (upstream OPM, OPM_RELEASE = release/2026.10), opm-simulators (bika-git,
+#      neural-cpr-control, based on that release) and the decks (bika-git/decks:
 #      Norne, SPE9, SPE11A/B, SPE10, Drogon and the spe11_decks collection)
 #   2. Builds the Dune modules via dunecontrol
 #   3. Builds opm-common → opm-grid → opm-simulators (flow)
@@ -121,10 +121,10 @@ clone_repo opm-grid   "https://github.com/OPM/opm-grid.git"   "$OPM_RELEASE" "$O
 
 # opm-simulators: NeuralCprPolicy, neural AMG and abort policies, deck guards,
 # doc/neural_cpr training scripts.
-clone_repo opm-simulators "https://github.com/bikagit/opm-simulators.git" "$OPM_SIM_BRANCH"
+clone_repo opm-simulators "https://github.com/bika-git/opm-simulators.git" "$OPM_SIM_BRANCH"
 
 # decks: Norne, SPE9, SPE11A/B, SPE10, Drogon, spe11_decks (replaces opm-tests).
-clone_repo decks "https://github.com/bikagit/decks.git" "$DECKS_BRANCH"
+clone_repo decks "https://github.com/bika-git/decks.git" "$DECKS_BRANCH"
 
 for f in "$ZOLTAN_INCLUDE_DIR/zoltan.h" "$ZOLTAN_LIBRARY"; do
     [[ -e "$f" ]] || echo "  WARNING: $f not found; set ZOLTAN_INCLUDE_DIR/ZOLTAN_LIBRARY" \
