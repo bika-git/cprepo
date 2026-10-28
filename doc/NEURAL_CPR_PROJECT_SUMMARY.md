@@ -209,7 +209,7 @@ repeats, or not at all.
 | What | Where |
 | --- | --- |
 | Code | `opm-simulators`, local branch `neural-cpr-control`  |
-| Models | `tmp/amg_policy/cpr_amg_policy.model`, `tmp/abort_policy/abort_spe11a_norne_spe9.model` |
+| Models | `model/amg_policy/cpr_amg_policy.model`, `model/abort_policy/abort_spe11a_norne_spe9.model` |
 | Full snapshot, restore steps, detailed notes | `neural_cpr_snapshot_20261015/NOTES.md` |
-| Per-deck comparison runs | `tmp/compare_neural_cpr/` (e.g. `SPE11B_20261026_163308/`) |
-| Bench runs | `tmp/bench_neural_cpr/` |
+| Per-deck comparison runs | `model/compare_neural_cpr/` (e.g. `SPE11B_20261026_163308/`) |
+| Bench runs | `model/bench_neural_cpr/` |
