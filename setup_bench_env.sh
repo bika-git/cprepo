@@ -46,11 +46,17 @@ CURRENT_DIRECTORY="$PWD"
 export CURRENT_DIRECTORY
 
 # ── configurable ──────────────────────────────────────────────────────────────
-NJOBS=${NJOBS:-$(nproc)}
+# Portable CPU count: nproc on Linux, sysctl on macOS
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    _nproc=$(sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
+else
+    _nproc=$(nproc 2>/dev/null || echo 4)
+fi
+NJOBS=${NJOBS:-$_nproc}
 CLEAN_BUILD=${CLEAN_BUILD:-0}
 # Not needed by the neural CPR policies (they use opm-common's ML::NNModel);
 # CMake skips the prefix if the path does not exist.
-LIBTORCH_PREFIX=${LIBTORCH_PREFIX:-/home/AD.NORCERESEARCH.NO/bika/bika/workstation/opmstation/soft/libtorch}
+LIBTORCH_PREFIX=${LIBTORCH_PREFIX:-}
 DUNE_VERSION=v2.11.0
 # opm-common and opm-grid branch; neural-cpr-control is based on this release.
 OPM_RELEASE=release/2026.10
@@ -68,13 +74,32 @@ $CURRENT_DIRECTORY/dune-geometry/build-cmake;\
 $CURRENT_DIRECTORY/dune-grid/build-cmake;\
 $CURRENT_DIRECTORY/dune-istl/build-cmake"
 
-# zoltan.h is in the source tree; Zoltan_config.h (generated) is in the build tree
-ZOLTAN_INCLUDE_DIR=${ZOLTAN_INCLUDE_DIR:-/usr/include/trilinos}
-ZOLTAN_LIBRARY=${ZOLTAN_LIBRARY:-/usr/lib/x86_64-linux-gnu/libtrilinos_zoltan.so}
+# ── Platform-specific defaults ────────────────────────────────────────────────
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    # macOS: prefer Homebrew.  Detect prefix (Apple Silicon /opt/homebrew, Intel /usr/local).
+    _brew_prefix=$(brew --prefix 2>/dev/null || echo /opt/homebrew)
+    # Trilinos/Zoltan: brew install trilinos
+    ZOLTAN_INCLUDE_DIR=${ZOLTAN_INCLUDE_DIR:-$_brew_prefix/include}
+    _zoltan_lib=$_brew_prefix/lib/libtrilinos_zoltan.dylib
+    # Older Homebrew trilinos installs the lib as libtrilinos_zoltan.dylib;
+    # fall back to the versioned name if needed.
+    if [[ ! -f "$_zoltan_lib" ]]; then
+        _zoltan_lib=$(ls "$_brew_prefix/lib/libtrilinos_zoltan"*.dylib 2>/dev/null | head -1 || echo "$_zoltan_lib")
+    fi
+    ZOLTAN_LIBRARY=${ZOLTAN_LIBRARY:-$_zoltan_lib}
+    # Extra CMake prefix path so find_package locates Homebrew MPI, Boost, etc.
+    HOMEBREW_PREFIX_PATH=${HOMEBREW_PREFIX_PATH:-$_brew_prefix}
+else
+    # Linux: Ubuntu/Debian defaults
+    ZOLTAN_INCLUDE_DIR=${ZOLTAN_INCLUDE_DIR:-/usr/include/trilinos}
+    ZOLTAN_LIBRARY=${ZOLTAN_LIBRARY:-/usr/lib/x86_64-linux-gnu/libtrilinos_zoltan.so}
+    HOMEBREW_PREFIX_PATH=${HOMEBREW_PREFIX_PATH:-}
+fi
 
 OPM_PREFIX_PATH="\
 $DUNE_PREFIX_PATH;\
-$LIBTORCH_PREFIX;\
+${LIBTORCH_PREFIX:+$LIBTORCH_PREFIX;}\
+${HOMEBREW_PREFIX_PATH:+$HOMEBREW_PREFIX_PATH;}\
 $CURRENT_DIRECTORY/build/opm-common;\
 $CURRENT_DIRECTORY/build/opm-grid"
 
@@ -128,7 +153,8 @@ clone_repo decks "https://github.com/bika-git/decks.git" "$DECKS_BRANCH"
 
 for f in "$ZOLTAN_INCLUDE_DIR/zoltan.h" "$ZOLTAN_LIBRARY"; do
     [[ -e "$f" ]] || echo "  WARNING: $f not found; set ZOLTAN_INCLUDE_DIR/ZOLTAN_LIBRARY" \
-                          "(Ubuntu: apt install libtrilinos-zoltan-dev)"
+                          "(Ubuntu: apt install libtrilinos-zoltan-dev," \
+                          "macOS: brew install trilinos)"
 done
 
 # ── 2. Build Dune modules via dunecontrol ─────────────────────────────────────
