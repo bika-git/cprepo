@@ -228,12 +228,29 @@ run_deck() {
     echo "  → $tag"
     mkdir -p "$outdir"
     local status=0
-    if "${FLOW_CMD[@]}" --output-dir="$outdir" "$@" "$deck" >"$outdir/flow.log" 2>&1; then
+    # Plain-flow arms must be upstream flow.  On binaries from before the
+    # 2026-10-29 inertness fix, a missing model path switched on a silent
+    # rule-based CPR schedule (log: "active (rule-based fallback)"), which
+    # inflated every gain measured against them (Norne ~4 %, OMEGA-0 8-22 %).
+    # Clear the policy environment and disable the policy explicitly.
+    local -a envp=()
+    if [[ "$tag" == "flow_default" || "$tag" == "baseline" ]]; then
+        envp=(env -u OPM_NEURAL_CPR_WEIGHTS -u OPM_NEURAL_CPR_ACTIONS -u OPM_NEURAL_CPR_MIN_GAIN
+              -u OPM_NEURAL_CPR_CONFIDENCE -u OPM_NEURAL_CPR_FORBID_LABELS -u OPM_NEURAL_CPR_RULE
+              -u OPM_CPR_ABORT_MODEL -u OPM_CPR_ABORT_THRESHOLD -u OPM_CPR_SWEEP_LOG
+              -u OPM_EW -u OPM_EW_GATE_MODEL -u OPM_EW_COST_MODEL -u OPM_EW_GATE_ONLINE
+              OPM_NEURAL_CPR_DISABLE=1)
+    fi
+    if "${envp[@]}" "${FLOW_CMD[@]}" --output-dir="$outdir" "$@" "$deck" >"$outdir/flow.log" 2>&1; then
         status=0
     else
         status=$?
     fi
     echo "$status" >"$outdir/exit_code"
+    if [[ "$tag" == "flow_default" || "$tag" == "baseline" ]] \
+       && grep -q "rule-based fallback\|NeuralCprPolicy decision" "$outdir/flow.log" "$outdir"/*.DBG 2>/dev/null; then
+        echo "  !! $tag ran with the CPR policy active - NOT an upstream baseline" | tee -a "$outdir/NOT_UPSTREAM"
+    fi
 }
 
 label_desc() {
