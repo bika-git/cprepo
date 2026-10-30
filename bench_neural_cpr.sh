@@ -236,10 +236,25 @@ run_deck() {
     echo "$status" >"$outdir/exit_code"
 }
 
+# run_plain: run_deck with Flow's upstream solver defaults.  On neural-cpr-control
+# an unset OPM_NEURAL_CPR_WEIGHTS is not the default: Flow then runs the
+# rule-based fallback policy, which rewrites the solver config at every rebuild
+# (and overrides any --linear-solver file).  OPM_NEURAL_CPR_DISABLE=1 skips the
+# policy object entirely, as compare_neural_cpr.sh does for its default arm.
+# A subshell keeps the flag away from the neural arms that follow.
+run_plain() {
+    (
+        unset OPM_NEURAL_CPR_WEIGHTS OPM_NEURAL_CPR_FORBID_LABELS OPM_NEURAL_CPR_ACTIONS \
+              OPM_NEURAL_CPR_MIN_GAIN OPM_CPR_ABORT_MODEL OPM_CPR_ABORT_THRESHOLD OPM_CPR_SWEEP_LOG
+        export OPM_NEURAL_CPR_DISABLE=1
+        run_deck "$@"
+    )
+}
+
 label_desc() {
     local label=$1
     case "$label" in
-        none)  echo "no fixed sweep label; Flow default linear solver" ;;
+        none)  echo "no fixed sweep label; Flow default linear solver (policy disabled, OPM_NEURAL_CPR_DISABLE=1)" ;;
         ml)    echo "ML policy predicts labels 00-23 per Newton step" ;;
         *)
             local n=$((10#$label))
@@ -789,7 +804,7 @@ echo "========================================"
 echo ""
 echo "── Norne ───────────────────────────────"
 unset OPM_NEURAL_CPR_WEIGHTS
-run_deck "flow_default" "$NORNE_DECK" "$OUTDIR/norne_flow_default"
+run_plain "flow_default" "$NORNE_DECK" "$OUTDIR/norne_flow_default"
 export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
 run_deck "neural-v3"    "$NORNE_DECK" "$OUTDIR/norne_neural"
 unset OPM_NEURAL_CPR_WEIGHTS
@@ -798,7 +813,7 @@ run_new_policies norne "$NORNE_DECK"
 echo ""
 echo "── Norne MSW (1A) ───────────────────────"
 unset OPM_NEURAL_CPR_WEIGHTS
-run_deck "flow_default" "$NORNE_MSW_DECK" "$OUTDIR/norne_msw_flow_default"
+run_plain "flow_default" "$NORNE_MSW_DECK" "$OUTDIR/norne_msw_flow_default"
 export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
 run_deck "neural-v3"    "$NORNE_MSW_DECK" "$OUTDIR/norne_msw_neural"
 run_deck "neural-reuse" "$NORNE_MSW_DECK" "$OUTDIR/norne_msw_neural_reuse" \
@@ -810,7 +825,7 @@ run_new_policies norne_msw "$NORNE_MSW_DECK"
 echo ""
 echo "── Drogon HIST ─────────────────────────"
 unset OPM_NEURAL_CPR_WEIGHTS
-run_deck "flow_default" "$DROGON_HIST_DECK" "$OUTDIR/drogon_hist_flow_default"
+run_plain "flow_default" "$DROGON_HIST_DECK" "$OUTDIR/drogon_hist_flow_default"
 export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
 run_deck "neural-v3"    "$DROGON_HIST_DECK" "$OUTDIR/drogon_hist_neural"
 run_deck "neural-reuse" "$DROGON_HIST_DECK" "$OUTDIR/drogon_hist_neural_reuse" \
@@ -832,7 +847,7 @@ for hist_dir in "$OUTDIR/drogon_hist_flow_default" "$OUTDIR/drogon_hist_neural" 
     fi
 done
 unset OPM_NEURAL_CPR_WEIGHTS
-run_deck "flow_default" "$DROGON_PRED_DECK" "$OUTDIR/drogon_pred_flow_default"
+run_plain "flow_default" "$DROGON_PRED_DECK" "$OUTDIR/drogon_pred_flow_default"
 export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
 run_deck "neural-v3"    "$DROGON_PRED_DECK" "$OUTDIR/drogon_pred_neural"
 run_deck "neural-reuse" "$DROGON_PRED_DECK" "$OUTDIR/drogon_pred_neural_reuse" \
@@ -845,7 +860,7 @@ rm -f "$DROGON_HIST_UNRST_LINK"
 echo ""
 echo "── SPE9 ────────────────────────────────"
 unset OPM_NEURAL_CPR_WEIGHTS
-run_deck "flow_default" "$SPE9_DECK" "$OUTDIR/spe9_flow_default"
+run_plain "flow_default" "$SPE9_DECK" "$OUTDIR/spe9_flow_default"
 export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
 run_deck "neural-v3"    "$SPE9_DECK" "$OUTDIR/spe9_neural"
 unset OPM_NEURAL_CPR_WEIGHTS
@@ -861,7 +876,7 @@ if (( SPE10MODEL1_NPROCS > NPROCS )); then SPE10MODEL1_NPROCS=$NPROCS; fi
 set_flow_cmd "$SPE10MODEL1_NPROCS"
 echo "  MPI ranks: $SPE10MODEL1_NPROCS"
 unset OPM_NEURAL_CPR_WEIGHTS
-run_deck "flow_default" "$SPE10MODEL1_DECK" "$OUTDIR/spe10model1_flow_default"
+run_plain "flow_default" "$SPE10MODEL1_DECK" "$OUTDIR/spe10model1_flow_default"
 export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
 run_deck "neural-v3"    "$SPE10MODEL1_DECK" "$OUTDIR/spe10model1_neural"
 unset OPM_NEURAL_CPR_WEIGHTS
@@ -871,7 +886,7 @@ FLOW_CMD=("${_spe10m1_old_FLOW_CMD[@]}")
 echo ""
 echo "── SPE10 MOD01-01 ───────────────────────"
 unset OPM_NEURAL_CPR_WEIGHTS
-run_deck "flow_default" "$SPE10MOD01_DECK" "$OUTDIR/spe10mod01_flow_default"
+run_plain "flow_default" "$SPE10MOD01_DECK" "$OUTDIR/spe10mod01_flow_default"
 export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
 run_deck "neural-v3"    "$SPE10MOD01_DECK" "$OUTDIR/spe10mod01_neural"
 unset OPM_NEURAL_CPR_WEIGHTS
@@ -901,9 +916,9 @@ old_FLOW_CMD=("${FLOW_CMD[@]}")
 SPE11_NPROCS=${SPE11_NPROCS:-$NPROCS}
 if (( SPE11_NPROCS > 48 )); then SPE11_NPROCS=48; fi
 set_flow_cmd "$SPE11_NPROCS"
-echo "  flow_default: no solver flags (cprw + trueimpes + paroverilu0 + ilu0-AMG, reuse-setup=4)"
+echo "  flow_default: policy disabled, no solver flags (cprw + trueimpes + paroverilu0 + ilu0-AMG, reuse-setup=4)"
 unset OPM_NEURAL_CPR_WEIGHTS
-run_deck "flow_default" "$SPE11PYOPM_DECK" "$OUTDIR/spe11pyopm_flow_default"
+run_plain "flow_default" "$SPE11PYOPM_DECK" "$OUTDIR/spe11pyopm_flow_default"
 
 # echo "  baseline fixed solver: $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); cpr-reuse-setup=0"
 # run_deck "baseline"     "$SPE11PYOPM_DECK" "$OUTDIR/spe11pyopm_baseline" \
@@ -961,13 +976,13 @@ echo "── SPE11B ────────────────────
 SPE11B_NPROCS=${SPE11B_NPROCS:-16}
 if (( SPE11B_NPROCS > SPE11_NPROCS )); then SPE11B_NPROCS=$SPE11_NPROCS; fi
 set_flow_cmd "$SPE11B_NPROCS"
-echo "  flow_default: no solver flags (cprw + trueimpes + paroverilu0 + ilu0-AMG, reuse-setup=4)"
+echo "  flow_default: policy disabled, no solver flags (cprw + trueimpes + paroverilu0 + ilu0-AMG, reuse-setup=4)"
 echo "  MPI ranks: $SPE11B_NPROCS (SPE11A used $SPE11_NPROCS)"
 unset OPM_NEURAL_CPR_WEIGHTS
-run_deck "flow_default" "$SPE11B_DECK" "$OUTDIR/spe11b_flow_default"
+run_plain "flow_default" "$SPE11B_DECK" "$OUTDIR/spe11b_flow_default"
 
 echo "  baseline fixed solver: $(label_desc "$SPE11PYOPM_SOLVER_LABEL"); cpr-reuse-setup=0"
-run_deck "baseline"     "$SPE11B_DECK" "$OUTDIR/spe11b_baseline" \
+run_plain "baseline"     "$SPE11B_DECK" "$OUTDIR/spe11b_baseline" \
     --linear-solver="$SPE11PYOPM_SOLVER" \
     --cpr-reuse-setup=0
 
@@ -1007,7 +1022,7 @@ if [[ $BENCH_HELDOUT -eq 1 ]]; then
 
         echo "  $HELDOUT_TITLE: $HELDOUT_DECK"
         unset OPM_NEURAL_CPR_WEIGHTS
-        run_deck "${heldout}-flow_default" "$HELDOUT_DECK" "$OUTDIR/${HELDOUT_STEM}_flow_default"
+        run_plain "${heldout}-flow_default" "$HELDOUT_DECK" "$OUTDIR/${HELDOUT_STEM}_flow_default"
 
         export OPM_NEURAL_CPR_WEIGHTS="$MODEL"
         run_deck "${heldout}-neural-v3" "$HELDOUT_DECK" "$OUTDIR/${HELDOUT_STEM}_neural"
