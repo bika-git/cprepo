@@ -23,7 +23,7 @@
 # What this does:
 #   1. Clones the Dune modules (DUNE_VERSION, v2.11.0), opm-common and opm-grid
 #      (upstream OPM, OPM_RELEASE = release/2026.10), opm-simulators (bika-git,
-#      neural-cpr-control, based on that release) and the decks (bika-git/decks:
+#      neural-amg-7feat-allrows, based on that release) and the decks (bika-git/decks:
 #      Norne, SPE9, SPE11A/B, SPE10, Drogon and the spe11_decks collection)
 #   2. Builds the Dune modules via dunecontrol
 #   3. Builds opm-common → opm-grid → opm-simulators (flow)
@@ -65,7 +65,7 @@ OPM_RELEASE=release/2026.10
 # partitioning).  Set OPM_COMMON_COMMIT= OPM_GRID_COMMIT= to follow the branch.
 OPM_COMMON_COMMIT=${OPM_COMMON_COMMIT-b90f7aebfe601af0cdb104a1285cd140a011ced5}
 OPM_GRID_COMMIT=${OPM_GRID_COMMIT-fa8b05067981f2ef824f5be45cc4975552f9d580}
-OPM_SIM_BRANCH=neural-cpr-control
+OPM_SIM_BRANCH=neural-amg-7feat-allrows
 DECKS_BRANCH=neural-cpr-control
 
 DUNE_PREFIX_PATH="\
