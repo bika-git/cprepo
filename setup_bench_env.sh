@@ -23,10 +23,10 @@
 # What this does:
 #   1. Clones the Dune modules (DUNE_VERSION, v2.11.0), opm-common and opm-grid
 #      (upstream OPM, OPM_BRANCH = master), opm-simulators (bika-git,
-#      neural-cpr-master: the neural-cpr-control commits on upstream master;
-#      neural-cpr-control itself stays on release/2026.10) and the decks
-#      (bika-git/decks: Norne, SPE9, SPE11A/B, SPE10, Drogon and the
-#      spe11_decks collection)
+#      neural-amg-7feat-allrows-master: the neural-amg-7feat-allrows commits on
+#      neural-cpr-master, i.e. on upstream master; neural-amg-7feat-allrows
+#      itself stays on release/2026.10) and the decks (bika-git/decks: Norne,
+#      SPE9, SPE11A/B, SPE10, Drogon and the spe11_decks collection)
 #   2. Builds the Dune modules via dunecontrol
 #   3. Builds opm-common → opm-grid → opm-simulators (flow)
 #   4. Generates the 24 CPR solver config JSONs required by bench_neural_cpr.sh
@@ -60,17 +60,17 @@ CLEAN_BUILD=${CLEAN_BUILD:-0}
 # CMake skips the prefix if the path does not exist.
 LIBTORCH_PREFIX=${LIBTORCH_PREFIX:-}
 DUNE_VERSION=v2.11.0
-# opm-common and opm-grid branch; neural-cpr-master is based on upstream master.
+# opm-common and opm-grid branch; neural-amg-7feat-allrows-master is based on
+# upstream master.
 OPM_BRANCH=master
 # Master commits of the same day as the opm-simulators master that
 # neural-cpr-master is based on (3469fc014, 2026-11-23).  Master moves daily and
 # the three modules must match, so these stay pinned; set
 # OPM_COMMON_COMMIT= OPM_GRID_COMMIT= to follow master.  The published results
-# were built on release/2026.10 (neural-cpr-control, opm-common b90f7aebf,
-# opm-grid fa8b05067).
+# were built on release/2026.10 (opm-common b90f7aebf, opm-grid fa8b05067).
 OPM_COMMON_COMMIT=${OPM_COMMON_COMMIT-4b238a130158479a86aac612325ec373445a6ae1}
 OPM_GRID_COMMIT=${OPM_GRID_COMMIT-5794dd681c243dffa20a8f6af2f9c5f84a12abcc}
-OPM_SIM_BRANCH=neural-cpr-master
+OPM_SIM_BRANCH=neural-amg-7feat-allrows-master
 DECKS_BRANCH=neural-cpr-control
 
 DUNE_PREFIX_PATH="\

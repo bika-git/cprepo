@@ -79,7 +79,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # Run from the script directory so relative paths are predictable
 cd "$SCRIPT_DIR"
 
-FLOW=$SCRIPT_DIR/build/opm-simulators/bin/flow
+FLOW=${FLOW:-$SCRIPT_DIR/build/opm-simulators/bin/flow}
 SCRIPTS=$SCRIPT_DIR/opm-simulators/doc/neural_cpr
 
 # Set FRESH_SWEEP=1 to regenerate the sweep data in Step 0 (hours of flow runs);
@@ -97,6 +97,11 @@ HELDOUT_CASES=${HELDOUT_CASES:-"spe10model1"}
 
 # MPI setup — NPROCS controls ranks per flow call in both sweep and benchmark
 NPROCS=${NPROCS:-1}
+# Sweep runs launched at once (run_sweep.py --jobs).  Unset = run_sweep.py's
+# default, nCPU / ranks, which ignores threads: at 32 ranks x 2 threads on 144
+# cores it oversubscribes, and the labels come from those timings.  Use
+# SWEEP_JOBS=2 there.
+SWEEP_JOBS=${SWEEP_JOBS:-}
 # Extra mpirun flags for the benchmark runs; the sweep passes its own.  Reached
 # only when NPROCS > 1, since set_flow_cmd prepends mpirun only then — a serial
 # run never sees these.  Unset gives "--bind-to none"; MPI_ARGS="" passes none.
@@ -158,7 +163,7 @@ OUTDIR=$SCRIPT_DIR/tmp/bench_neural_cpr
 # neural_cpr_snapshot_20261015 (both trained on SPE11A, Norne and SPE9).
 NEW_POLICIES=${NEW_POLICIES:-1}
 NEW_POLICY_ARMS=${NEW_POLICY_ARMS:-"neural-amg neural-abort neural-amg+abort"}
-AMG_MODEL=${AMG_MODEL:-$SCRIPT_DIR/models/amg_policy/cpr_amg_policy.model}
+AMG_MODEL=${AMG_MODEL:-$SCRIPT_DIR/models/amg_policy/cpr_amg_policy_7feat_allrows_newton_x3.model}
 ABORT_MODEL=${ABORT_MODEL:-$SCRIPT_DIR/models/abort_policy/abort_spe11a_norne_spe9.model}
 AMG_MIN_GAIN=${AMG_MIN_GAIN:-0.05}
 ABORT_THRESHOLD=${ABORT_THRESHOLD:-0.95}
@@ -530,6 +535,7 @@ run_sweep() {
         --flow    "$FLOW" \
         --nprocs  "$nprocs" \
         --out     "$out" \
+        ${SWEEP_JOBS:+--jobs "$SWEEP_JOBS"} \
         "$@"
 }
 
