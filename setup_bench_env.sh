@@ -4,7 +4,7 @@
 # Prerequisites: cmake, make, MPI (OpenMPI or MPICH), Python 3, git
 #
 # Usage (fresh machine):
-#   git clone -b neural-cpr-control https://github.com/bikagit/cprepo.git
+#   git clone -b neural-cpr-full-sweep https://github.com/bika-git/cprepo.git
 #   cd cprepo
 #   bash setup_bench_env.sh
 #
@@ -23,7 +23,7 @@
 # What this does:
 #   1. Clones the Dune modules (DUNE_VERSION, v2.11.0), opm-common and opm-grid
 #      (upstream OPM, OPM_RELEASE = release/2026.10), opm-simulators (bikagit,
-#      neural-cpr-control, based on that release) and the decks (bikagit/decks:
+#      neural-cpr-full-sweep, based on that release) and the decks (bikagit/decks:
 #      Norne, SPE9, SPE11A/B, SPE10, Drogon and the spe11_decks collection)
 #   2. Builds the Dune modules via dunecontrol
 #   3. Builds opm-common → opm-grid → opm-simulators (flow)
@@ -46,20 +46,34 @@ CURRENT_DIRECTORY="$PWD"
 export CURRENT_DIRECTORY
 
 # ── configurable ──────────────────────────────────────────────────────────────
-NJOBS=${NJOBS:-$(nproc)}
+# `nproc` is common on Linux but is not installed by default on macOS.
+# Keep an explicit NJOBS override, and otherwise use the native CPU-count
+# command when available.
+if [[ -z "${NJOBS:-}" ]]; then
+    if command -v nproc >/dev/null 2>&1; then
+        NJOBS=$(nproc)
+    elif command -v sysctl >/dev/null 2>&1; then
+        # OPM's C++ translation units are large; using every core on macOS
+        # can make the compiler exhaust memory and terminate the terminal.
+        # Users can still opt into more parallelism with NJOBS=N.
+        NJOBS=2
+    else
+        NJOBS=1
+    fi
+fi
 CLEAN_BUILD=${CLEAN_BUILD:-0}
 # Not needed by the neural CPR policies (they use opm-common's ML::NNModel);
 # CMake skips the prefix if the path does not exist.
 LIBTORCH_PREFIX=${LIBTORCH_PREFIX:-/home/AD.NORCERESEARCH.NO/bika/bika/workstation/opmstation/soft/libtorch}
 DUNE_VERSION=v2.11.0
-# opm-common and opm-grid branch; neural-cpr-control is based on this release.
+# opm-common and opm-grid branch; the feature branch is based on the fork's main.
 OPM_RELEASE=release/2026.10
 # Exact release commits the published results were built with (the release
 # branch keeps moving, e.g. rc1 changed NNLayer instantiation and Zoltan
 # partitioning).  Set OPM_COMMON_COMMIT= OPM_GRID_COMMIT= to follow the branch.
 OPM_COMMON_COMMIT=${OPM_COMMON_COMMIT-b90f7aebfe601af0cdb104a1285cd140a011ced5}
 OPM_GRID_COMMIT=${OPM_GRID_COMMIT-fa8b05067981f2ef824f5be45cc4975552f9d580}
-OPM_SIM_BRANCH=neural-cpr-control
+OPM_SIM_BRANCH=neural-cpr-full-sweep
 DECKS_BRANCH=main
 
 DUNE_PREFIX_PATH="\
@@ -69,8 +83,28 @@ $CURRENT_DIRECTORY/dune-grid/build-cmake;\
 $CURRENT_DIRECTORY/dune-istl/build-cmake"
 
 # zoltan.h is in the source tree; Zoltan_config.h (generated) is in the build tree
-ZOLTAN_INCLUDE_DIR=${ZOLTAN_INCLUDE_DIR:-/usr/include/trilinos}
-ZOLTAN_LIBRARY=${ZOLTAN_LIBRARY:-/usr/lib/x86_64-linux-gnu/libtrilinos_zoltan.so}
+if [[ -z "${ZOLTAN_INCLUDE_DIR:-}" ]]; then
+    if [[ -d /usr/include/trilinos ]]; then
+        ZOLTAN_INCLUDE_DIR=/usr/include/trilinos
+    elif command -v brew >/dev/null 2>&1 && [[ -f "$(brew --prefix trilinos 2>/dev/null)/include/zoltan.h" ]]; then
+        ZOLTAN_INCLUDE_DIR="$(brew --prefix trilinos)/include"
+    else
+        ZOLTAN_INCLUDE_DIR=/usr/include/trilinos
+    fi
+fi
+if [[ -z "${ZOLTAN_LIBRARY:-}" ]]; then
+    if [[ -f /usr/lib/x86_64-linux-gnu/libtrilinos_zoltan.so ]]; then
+        ZOLTAN_LIBRARY=/usr/lib/x86_64-linux-gnu/libtrilinos_zoltan.so
+    elif command -v brew >/dev/null 2>&1 && [[ -f "$(brew --prefix trilinos 2>/dev/null)/lib/libzoltan.dylib" ]]; then
+        # The Homebrew OPM Trilinos formula installs libzoltan.dylib, not
+        # Ubuntu's libtrilinos_zoltan.so.
+        ZOLTAN_LIBRARY="$(brew --prefix trilinos)/lib/libzoltan.dylib"
+    elif [[ "$(uname -s)" == Darwin ]]; then
+        ZOLTAN_LIBRARY=""
+    else
+        ZOLTAN_LIBRARY=/usr/lib/x86_64-linux-gnu/libtrilinos_zoltan.so
+    fi
+fi
 
 OPM_PREFIX_PATH="\
 $DUNE_PREFIX_PATH;\
