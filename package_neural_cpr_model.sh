@@ -43,7 +43,7 @@ Options:
   --abort-threshold P   Neural abort threshold. Default: 0.95.
   --confidence X        CPR variant policy confidence gate. Default: 0.6.
   --forbid-labels LIST  CPR variant labels to forbid. Default: none (Flow from
-                        neural-cpr-control blocks trueimpesanalytic on decks without
+                        neural-cpr-master blocks trueimpesanalytic on decks without
                         oil itself).
   --np-hint N           MPI ranks for README examples. Default: 32.
   --threads-hint N      Threads per rank for README examples. Default: 2.
@@ -236,7 +236,7 @@ done
 cat >"$BUNDLE_DIR/neural_cpr_model.json" <<EOF
 {
   "created_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "flow": "opm-simulators branch neural-cpr-control",
+  "flow": "opm-simulators branch neural-cpr-master",
   "trained_on": "$(json_escape "$TRAINED_ON")",
   "cpr_reuse": "flow defaults",
   "nprocs_hint": $NPROCS_HINT,
@@ -285,7 +285,7 @@ cat >"$BUNDLE_DIR/README.md" <<EOF
 
 Trained neural-network policies for the CPR linear solver of OPM Flow, with
 helper scripts to run and compare them.  Flow and the decks are not included.
-The models need a Flow built from opm-simulators branch \`neural-cpr-control\`;
+The models need a Flow built from opm-simulators branch \`neural-cpr-master\`;
 other builds ignore the environment variables below.
 
 ## Models

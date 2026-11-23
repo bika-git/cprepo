@@ -4,7 +4,7 @@
 # Prerequisites: cmake, make, MPI (OpenMPI or MPICH), Python 3, git
 #
 # Usage (fresh machine):
-#   git clone -b neural-cpr-control https://github.com/bika-git/cprepo.git
+#   git clone -b neural-cpr-master https://github.com/bika-git/cprepo.git
 #   cd cprepo
 #   bash setup_bench_env.sh
 #
@@ -14,17 +14,19 @@
 # Environment overrides:
 #   NJOBS=N              parallel build jobs (default: nproc)
 #   CLEAN_BUILD=1        delete build/ and rebuild the OPM stack from scratch
-#   OPM_COMMON_COMMIT=, OPM_GRID_COMMIT=   follow release/2026.10 instead of
-#                        the pinned commits the results were built with
+#   OPM_COMMON_COMMIT=, OPM_GRID_COMMIT=   follow master instead of the pinned
+#                        master commits neural-cpr-master was built against
 #   ZOLTAN_INCLUDE_DIR, ZOLTAN_LIBRARY   Zoltan location (default: Ubuntu's
 #                        libtrilinos-zoltan-dev paths)
 #   LIBTORCH_PREFIX      optional, not needed by the neural CPR policies
 #
 # What this does:
 #   1. Clones the Dune modules (DUNE_VERSION, v2.11.0), opm-common and opm-grid
-#      (upstream OPM, OPM_RELEASE = release/2026.10), opm-simulators (bika-git,
-#      neural-cpr-control, based on that release) and the decks (bika-git/decks:
-#      Norne, SPE9, SPE11A/B, SPE10, Drogon and the spe11_decks collection)
+#      (upstream OPM, OPM_BRANCH = master), opm-simulators (bika-git,
+#      neural-cpr-master: the neural-cpr-control commits on upstream master;
+#      neural-cpr-control itself stays on release/2026.10) and the decks
+#      (bika-git/decks: Norne, SPE9, SPE11A/B, SPE10, Drogon and the
+#      spe11_decks collection)
 #   2. Builds the Dune modules via dunecontrol
 #   3. Builds opm-common → opm-grid → opm-simulators (flow)
 #   4. Generates the 24 CPR solver config JSONs required by bench_neural_cpr.sh
@@ -58,14 +60,17 @@ CLEAN_BUILD=${CLEAN_BUILD:-0}
 # CMake skips the prefix if the path does not exist.
 LIBTORCH_PREFIX=${LIBTORCH_PREFIX:-}
 DUNE_VERSION=v2.11.0
-# opm-common and opm-grid branch; neural-cpr-control is based on this release.
-OPM_RELEASE=release/2026.10
-# Exact release commits the published results were built with (the release
-# branch keeps moving, e.g. rc1 changed NNLayer instantiation and Zoltan
-# partitioning).  Set OPM_COMMON_COMMIT= OPM_GRID_COMMIT= to follow the branch.
-OPM_COMMON_COMMIT=${OPM_COMMON_COMMIT-b90f7aebfe601af0cdb104a1285cd140a011ced5}
-OPM_GRID_COMMIT=${OPM_GRID_COMMIT-fa8b05067981f2ef824f5be45cc4975552f9d580}
-OPM_SIM_BRANCH=neural-cpr-control
+# opm-common and opm-grid branch; neural-cpr-master is based on upstream master.
+OPM_BRANCH=master
+# Master commits of the same day as the opm-simulators master that
+# neural-cpr-master is based on (3469fc014, 2026-11-23).  Master moves daily and
+# the three modules must match, so these stay pinned; set
+# OPM_COMMON_COMMIT= OPM_GRID_COMMIT= to follow master.  The published results
+# were built on release/2026.10 (neural-cpr-control, opm-common b90f7aebf,
+# opm-grid fa8b05067).
+OPM_COMMON_COMMIT=${OPM_COMMON_COMMIT-4b238a130158479a86aac612325ec373445a6ae1}
+OPM_GRID_COMMIT=${OPM_GRID_COMMIT-5794dd681c243dffa20a8f6af2f9c5f84a12abcc}
+OPM_SIM_BRANCH=neural-cpr-master
 DECKS_BRANCH=neural-cpr-control
 
 DUNE_PREFIX_PATH="\
@@ -140,9 +145,9 @@ for module in common geometry grid istl; do
     clone_repo "dune-$module" "https://gitlab.dune-project.org/core/dune-$module.git" "$DUNE_VERSION"
 done
 
-# opm-common and opm-grid: upstream OPM release, no local patches needed.
-clone_repo opm-common "https://github.com/OPM/opm-common.git" "$OPM_RELEASE" "$OPM_COMMON_COMMIT"
-clone_repo opm-grid   "https://github.com/OPM/opm-grid.git"   "$OPM_RELEASE" "$OPM_GRID_COMMIT"
+# opm-common and opm-grid: upstream OPM master, no local patches needed.
+clone_repo opm-common "https://github.com/OPM/opm-common.git" "$OPM_BRANCH" "$OPM_COMMON_COMMIT"
+clone_repo opm-grid   "https://github.com/OPM/opm-grid.git"   "$OPM_BRANCH" "$OPM_GRID_COMMIT"
 
 # opm-simulators: NeuralCprPolicy, neural AMG and abort policies, deck guards,
 # doc/neural_cpr training scripts.

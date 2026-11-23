@@ -7,7 +7,7 @@
 #       --np 32 --threads 2 --mpi-args "--bind-to none"
 #   ./run_neural_cpr.sh cpr_policy.model CASE.DATA --np 8        # 24-variant config policy
 #
-# Policies (Flow from opm-simulators branch neural-cpr-control):
+# Policies (Flow from opm-simulators branch neural-cpr-master):
 #   --model        CPR variant policy:   OPM_NEURAL_CPR_WEIGHTS=model
 #   --amg-model    neural AMG policy:    OPM_NEURAL_CPR_WEIGHTS=model OPM_NEURAL_CPR_ACTIONS=amg
 #                                        OPM_NEURAL_CPR_MIN_GAIN=0.05
@@ -64,7 +64,7 @@ Options:
   --confidence X        Confidence gate for classifier models. Default: 0.6.
   --forbid-labels LIST  Comma-separated CPR variant labels to forbid.
   --spe11-safe          Shortcut for --forbid-labels 16,...,23 (trueimpesanalytic).
-                        Flow from neural-cpr-control applies this automatically on
+                        Flow from neural-cpr-master applies this automatically on
                         decks without oil; kept for older builds.
   --reuse               Add explicit CPR reuse flags (--reuse-setup/--reuse-interval).
                         Default: none, i.e. Flow's defaults (setup 4, interval 30).

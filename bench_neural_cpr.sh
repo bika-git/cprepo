@@ -14,7 +14,7 @@
 #     Norne + SPE9 (noise reduction via median), and once for SPE11A.
 #     Each deck×config pair writes one CSV of per-Newton-step features + timing.
 #     Tool: opm-simulators/doc/neural_cpr/run_sweep.py
-#     On opm-simulators neural-cpr-control the sweep runs at Flow's CPR
+#     On opm-simulators neural-cpr-master the sweep runs at Flow's CPR
 #     settings, including setup reuse (4/30) and use_well_weights=false, so
 #     label 12 (label 8 on decks without wells) is Flow's default solver.
 #     Sweeps from older branches rebuilt the CPR setup on every solve.
@@ -34,7 +34,7 @@
 #
 #   Step 3 — benchmark                        [the default: this is all that runs]
 #     flow_default / baseline / neural-v3 / neural-reuse for each deck, plus the
-#     neural policies of neural-cpr-control on Flow's default solver:
+#     neural policies of neural-cpr-master on Flow's default solver:
 #       neural-amg        neural AMG policy: prolongation damping and coarsening
 #                         target of the pressure AMG at each CPR setup rebuild
 #       neural-abort      neural abort policy: gives up on a timestep attempt
@@ -153,7 +153,7 @@ MODEL=${MODEL:-$SCRIPT_DIR/models/cpr_policy_retrained.model}
 ENCODER_PRETRAINED=$SCRIPT_DIR/models/cpr_encoder_pretrained.npz
 OUTDIR=$SCRIPT_DIR/tmp/bench_neural_cpr
 
-# Neural AMG and neural abort policies (Flow from opm-simulators neural-cpr-control),
+# Neural AMG and neural abort policies (Flow from opm-simulators neural-cpr-master),
 # run on Flow's default solver and CPR reuse.  Defaults: the models evaluated in
 # neural_cpr_snapshot_20261015 (both trained on SPE11A, Norne and SPE9).
 NEW_POLICIES=${NEW_POLICIES:-1}
@@ -165,7 +165,7 @@ ABORT_THRESHOLD=${ABORT_THRESHOLD:-0.95}
 
 # CPR variant labels the neural-v3 policy may not pick on SPE11: 16-23
 # (trueimpesanalytic) need an oil phase, which SPE11 lacks.  Flow from
-# neural-cpr-control blocks them itself (deck guards); this keeps older builds
+# neural-cpr-master blocks them itself (deck guards); this keeps older builds
 # safe.  Do not forbid label 8: SPE11 has no wells, so the guards allow only
 # the cpr labels, and label 8 (cpr, trueimpes, paroverilu0, ilu0) is then
 # Flow's default solver.
@@ -236,7 +236,7 @@ run_deck() {
     echo "$status" >"$outdir/exit_code"
 }
 
-# run_plain: run_deck with Flow's upstream solver defaults.  On neural-cpr-control
+# run_plain: run_deck with Flow's upstream solver defaults.  On neural-cpr-master
 # an unset OPM_NEURAL_CPR_WEIGHTS is not the default: Flow then runs the
 # rule-based fallback policy, which rewrites the solver config at every rebuild
 # (and overrides any --linear-solver file).  OPM_NEURAL_CPR_DISABLE=1 skips the

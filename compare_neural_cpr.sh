@@ -65,7 +65,7 @@ Options:
   --confidence X        Confidence gate for classifier models. Default: 0.6.
   --forbid-labels LIST  Comma-separated CPR variant labels to forbid.
   --spe11-safe          Shortcut for --forbid-labels 16,...,23 (trueimpesanalytic).
-                        Flow from neural-cpr-control applies this automatically on
+                        Flow from neural-cpr-master applies this automatically on
                         decks without oil.  Do not forbid label 8 there: on decks
                         without wells the guards already block the cprw labels, so
                         label 8 is Flow's default solver.
