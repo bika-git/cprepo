@@ -20,8 +20,9 @@ Both were trained on 2026-11-16/17 from the `cpr_sweep_data` sweeps
 Flow's CPR settings (setup reuse 4/30). Each model is an ensemble of 5 networks
 with tau = 1.
 
-Run them on a Flow built from `opm-simulators` branch `neural-amg-7feat-allrows`.
-Running a cost model together with a neural AMG model
+Run them on a Flow built from `opm-simulators` branch `neural-amg-7feat-allrows`
+(OPM release/2026.10) or `neural-amg-7feat-allrows-master` (the same commits on
+OPM master). Running a cost model together with a neural AMG model
 (`OPM_NEURAL_CPR_AMG_WEIGHTS`) needs the `ISTLSolver.hpp` change on that
 branch. `cpr_cost_newton21.model` was trained with `--newton-cost` and
 `--n-features` in `doc/neural_cpr/train_cpr_cost.py`, which are also on that

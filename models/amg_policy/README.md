@@ -11,8 +11,12 @@ values without warning.
 | `cpr_amg_policy_6feat_newton_x3.model` | 6, no diagonal-dominance input | `neural-amg-6feat` | `6e6814dc7` |
 | `cpr_amg_policy_7feat_allrows_newton_x3.model` | 7, `diag_dominance` over all owned rows of all ranks | `neural-amg-7feat-allrows` | `15dd586ad` |
 
-`setup_bench_env.sh` checks out `neural-cpr-control`. For the two newer models,
-switch `opm-simulators` to the branch above and rebuild Flow before running.
+On OPM master the same commits are on `neural-cpr-master` (for
+`cpr_amg_policy.model`) and `neural-amg-7feat-allrows-master` (for the
+seven-input model, where `9c1a83754` is the commit `15dd586ad` of the table).
+`setup_bench_env.sh` on this branch checks out `neural-amg-7feat-allrows-master`.
+For the six-input model, switch `opm-simulators` to `neural-amg-6feat` (OPM
+release/2026.10) and rebuild Flow before running.
 
 The six- and seven-input files are byte-identical copies of
 `doc/neural_cpr/models/` on their branches; `doc/neural_cpr/models/README.md`
