@@ -4,7 +4,7 @@
 # Prerequisites: cmake, make, MPI (OpenMPI or MPICH), Python 3, git
 #
 # Usage (fresh machine):
-#   git clone -b neural-cpr-control https://github.com/bikagit/cprepo.git
+#   git clone -b neural-cpr-amg-reuse https://github.com/bika-git/cprepo.git
 #   cd cprepo
 #   bash setup_bench_env.sh
 #
@@ -23,7 +23,7 @@
 # What this does:
 #   1. Clones the Dune modules (DUNE_VERSION, v2.11.0), opm-common and opm-grid
 #      (upstream OPM, OPM_RELEASE = release/2026.10), opm-simulators (bikagit,
-#      neural-cpr-control, based on that release) and the decks (bikagit/decks:
+#      neural-cpr-amg-reuse, based on that release) and the decks (bikagit/decks:
 #      Norne, SPE9, SPE11A/B, SPE10, Drogon and the spe11_decks collection)
 #   2. Builds the Dune modules via dunecontrol
 #   3. Builds opm-common → opm-grid → opm-simulators (flow)
@@ -52,14 +52,14 @@ CLEAN_BUILD=${CLEAN_BUILD:-0}
 # CMake skips the prefix if the path does not exist.
 LIBTORCH_PREFIX=${LIBTORCH_PREFIX:-/home/AD.NORCERESEARCH.NO/bika/bika/workstation/opmstation/soft/libtorch}
 DUNE_VERSION=v2.11.0
-# opm-common and opm-grid branch; neural-cpr-control is based on this release.
+# opm-common and opm-grid branch; the feature branch is based on this release.
 OPM_RELEASE=release/2026.10
 # Exact release commits the published results were built with (the release
 # branch keeps moving, e.g. rc1 changed NNLayer instantiation and Zoltan
 # partitioning).  Set OPM_COMMON_COMMIT= OPM_GRID_COMMIT= to follow the branch.
 OPM_COMMON_COMMIT=${OPM_COMMON_COMMIT-b90f7aebfe601af0cdb104a1285cd140a011ced5}
 OPM_GRID_COMMIT=${OPM_GRID_COMMIT-fa8b05067981f2ef824f5be45cc4975552f9d580}
-OPM_SIM_BRANCH=neural-cpr-control
+OPM_SIM_BRANCH=neural-cpr-amg-reuse
 DECKS_BRANCH=main
 
 DUNE_PREFIX_PATH="\
@@ -121,7 +121,7 @@ clone_repo opm-grid   "https://github.com/OPM/opm-grid.git"   "$OPM_RELEASE" "$O
 
 # opm-simulators: NeuralCprPolicy, neural AMG and abort policies, deck guards,
 # doc/neural_cpr training scripts.
-clone_repo opm-simulators "https://github.com/bikagit/opm-simulators.git" "$OPM_SIM_BRANCH"
+clone_repo opm-simulators "https://github.com/lechevaa/opm-simulators.git" "$OPM_SIM_BRANCH"
 
 # decks: Norne, SPE9, SPE11A/B, SPE10, Drogon, spe11_decks (replaces opm-tests).
 clone_repo decks "https://github.com/bikagit/decks.git" "$DECKS_BRANCH"
@@ -211,10 +211,10 @@ import os, pathlib, sys
 
 ROOT = pathlib.Path(os.environ.get("CURRENT_DIRECTORY", "."))
 sys.path.insert(0, str(ROOT / "opm-simulators/doc/neural_cpr"))
-from run_sweep import write_configs
+from run_sweep import ALL_CONFIGS, write_configs
 
 OUT = ROOT / "cpr_sweep_data/sweep_spe11/configs"
-paths = write_configs(OUT)
+paths = write_configs(OUT, ALL_CONFIGS)
 for label in sorted(paths):
     print(f"  wrote {paths[label].name}")
 
